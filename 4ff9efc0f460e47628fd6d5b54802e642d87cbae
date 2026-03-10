@@ -1,0 +1,24 @@
+.gitignore
+  a146ed84bdc6d608 1
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.8",
+  "base_commit_sha": "4ff9efc0f460e47628fd6d5b54802e642d87cbae",
+  "prompts": {
+    "a146ed84bdc6d608": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "d65b2fda-cd50-4428-a200-ab683e1a1ccc",
+        "model": "gpt-5.4-medium"
+      },
+      "human_author": "Nikita Bayev <nikita@bayev.kz>",
+      "messages": [],
+      "total_additions": 1,
+      "total_deletions": 0,
+      "accepted_lines": 1,
+      "overriden_lines": 0,
+      "messages_url": "https://usegitai.com/cas/23969865d05d7cbb7c62ece0657468e98517921d4c5c1edcbcdd577abf6aecd9"
+    }
+  }
+}
