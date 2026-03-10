@@ -1,0 +1,38 @@
+src/config.rs
+  eb16c70ce1496d23 17,73-79,371-421
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.8",
+  "base_commit_sha": "6ffad9c5d065e71de6b9286cb9d6aa83aa7d7c1e",
+  "prompts": {
+    "c554cba493cb3586": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "280a6001-1611-44d0-8071-79be44baa463",
+        "model": "default"
+      },
+      "human_author": "Nikita Bayev <nikita@bayev.kz>",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 297,
+      "overriden_lines": 0,
+      "messages_url": "https://usegitai.com/cas/85596af0cff1595eb21b2da45a046bb5545a3b70f083cf8f3f88b3eb8e438c75"
+    },
+    "eb16c70ce1496d23": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "9fa63fbe-a885-4e03-8f54-a42746cea798",
+        "model": "default"
+      },
+      "human_author": "Nikita Bayev <nikita@bayev.kz>",
+      "messages": [],
+      "total_additions": 65,
+      "total_deletions": 6,
+      "accepted_lines": 59,
+      "overriden_lines": 0,
+      "messages_url": "https://usegitai.com/cas/50c165e6d621cb4fa8e2e14f19670fe99f15677b9efd4761c559e0c4b3952e6e"
+    }
+  }
+}
