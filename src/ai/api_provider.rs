@@ -36,8 +36,8 @@ impl ApiKind {
 
     pub(crate) fn default_model(self) -> &'static str {
         match self {
-            Self::OpenAi => "gpt-4.1-mini",
-            Self::Anthropic => "claude-3-7-sonnet-latest",
+            Self::OpenAi => "gpt-4o-mini",
+            Self::Anthropic => "claude-sonnet-4-6",
         }
     }
 
@@ -272,9 +272,9 @@ mod tests {
 
     #[test]
     fn builds_openai_chat_completion_payload() {
-        let body = build_request_body(ApiKind::OpenAi, "gpt-4.1-mini", "Summarize my work");
+        let body = build_request_body(ApiKind::OpenAi, "gpt-4o-mini", "Summarize my work");
 
-        assert_eq!(body["model"], "gpt-4.1-mini");
+        assert_eq!(body["model"], "gpt-4o-mini");
         assert_eq!(body["messages"][0]["role"], "system");
         assert_eq!(body["messages"][1]["content"], "Summarize my work");
     }
@@ -342,7 +342,7 @@ mod tests {
         let provider = ApiProvider::new(
             ApiKind::Anthropic,
             "anthropic-key".to_string(),
-            "claude-3-7-sonnet-latest".to_string(),
+            "claude-sonnet-4-6".to_string(),
             None,
         );
         let summary = provider
@@ -352,7 +352,7 @@ mod tests {
                 |kind, api_key, model, prompt| {
                     assert_eq!(kind, ApiKind::Anthropic);
                     assert_eq!(api_key, "anthropic-key");
-                    assert_eq!(model, "claude-3-7-sonnet-latest");
+                    assert_eq!(model, "claude-sonnet-4-6");
                     assert!(prompt.contains("Period: week"));
                     Ok("Weekly summary".to_string())
                 },

@@ -514,17 +514,17 @@ mod tests {
     #[test]
     fn cache_key_is_deterministic_and_different_for_different_inputs() {
         let prompt = "Period: today\n\n1. [repo] fix: bug (abc) on main at 2026-03-10T12:00:00Z\n";
-        let key1 = compute_cache_key("openai", "gpt-4.1-mini", "today", prompt);
-        let key2 = compute_cache_key("openai", "gpt-4.1-mini", "today", prompt);
+        let key1 = compute_cache_key("openai", "gpt-4o-mini", "today", prompt);
+        let key2 = compute_cache_key("openai", "gpt-4o-mini", "today", prompt);
         assert_eq!(key1, key2);
 
-        let key3 = compute_cache_key("anthropic", "gpt-4.1-mini", "today", prompt);
+        let key3 = compute_cache_key("anthropic", "gpt-4o-mini", "today", prompt);
         assert_ne!(key1, key3);
         let key4 = compute_cache_key("openai", "other-model", "today", prompt);
         assert_ne!(key1, key4);
-        let key5 = compute_cache_key("openai", "gpt-4.1-mini", "yesterday", prompt);
+        let key5 = compute_cache_key("openai", "gpt-4o-mini", "yesterday", prompt);
         assert_ne!(key1, key5);
-        let key6 = compute_cache_key("openai", "gpt-4.1-mini", "today", "different prompt");
+        let key6 = compute_cache_key("openai", "gpt-4o-mini", "today", "different prompt");
         assert_ne!(key1, key6);
     }
 
@@ -537,7 +537,7 @@ mod tests {
             ai: AiConfig {
                 provider: Some("openai".to_string()),
                 api_key: Some("test-key".to_string()),
-                model: Some("gpt-4.1-mini".to_string()),
+                model: Some("gpt-4o-mini".to_string()),
                 cli: AiCliConfig {
                     prefer: Some("api".to_string()),
                 },

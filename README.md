@@ -134,8 +134,8 @@ Supported API providers:
 
 Default API models:
 
-- OpenAI: `gpt-4.1-mini`
-- Anthropic: `claude-3-7-sonnet-latest`
+- OpenAI: `gpt-4o-mini`
+- Anthropic: `claude-sonnet-4-6`
 
 ## Config File
 
@@ -148,7 +148,7 @@ Example:
 ```toml
 [ai]
 provider = "openai"
-model = "gpt-4.1-mini"
+model = "gpt-4o-mini"
 
 [ai.cli]
 prefer = "cli"
@@ -160,7 +160,7 @@ To use the direct API fallback, provide credentials either in the config file:
 [ai]
 provider = "anthropic"
 api_key = "your-api-key"
-model = "claude-3-7-sonnet-latest"
+model = "claude-sonnet-4-6"
 prompt_instructions = "Summarize in German. One short paragraph, plain text only."
 
 [ai.cli]

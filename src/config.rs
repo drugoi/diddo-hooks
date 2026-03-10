@@ -146,7 +146,7 @@ mod tests {
             &config_path,
             r#"[ai]
 provider = "anthropic"
-model = "claude-3-7-sonnet-latest"
+model = "claude-sonnet-4-6"
 
 [ai.cli]
 prefer = "cli"
@@ -157,7 +157,7 @@ prefer = "cli"
         let config = AppConfig::load(&config_path).unwrap();
 
         assert_eq!(config.ai.provider.as_deref(), Some("anthropic"));
-        assert_eq!(config.ai.model.as_deref(), Some("claude-3-7-sonnet-latest"));
+        assert_eq!(config.ai.model.as_deref(), Some("claude-sonnet-4-6"));
         assert_eq!(config.ai.cli.prefer.as_deref(), Some("cli"));
 
         fs::remove_dir_all(temp).unwrap();
@@ -270,7 +270,7 @@ api_key = "file-key"
         fs::write(
             &config_path,
             r#"[ai]
-model = "claude-3-7-sonnet-latest"
+model = "claude-sonnet-4-6"
 
 [ai.cli]
 prefer = "api"
@@ -286,7 +286,7 @@ prefer = "api"
         let config = AppConfig::load(&config_path).unwrap();
 
         assert_eq!(config.ai.provider, None);
-        assert_eq!(config.ai.model.as_deref(), Some("claude-3-7-sonnet-latest"));
+        assert_eq!(config.ai.model.as_deref(), Some("claude-sonnet-4-6"));
         assert_eq!(config.ai.resolved_provider().as_deref(), Some("anthropic"));
         assert_eq!(
             config.ai.resolved_api_key().as_deref(),
@@ -349,7 +349,7 @@ provider = "  AnThRoPiC  "
         fs::write(
             &config_path,
             r#"[ai]
-model = "  gpt-4.1-mini  "
+model = "  gpt-4o-mini  "
 
 [ai.cli]
 prefer = "  CoDeX  "
@@ -363,7 +363,7 @@ prefer = "  CoDeX  "
             config.ai.normalized_cli_preference().as_deref(),
             Some("codex")
         );
-        assert_eq!(config.ai.resolved_model().as_deref(), Some("gpt-4.1-mini"));
+        assert_eq!(config.ai.resolved_model().as_deref(), Some("gpt-4o-mini"));
 
         fs::remove_dir_all(temp).unwrap();
     }
