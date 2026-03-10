@@ -161,6 +161,7 @@ To use the direct API fallback, provide credentials either in the config file:
 provider = "anthropic"
 api_key = "your-api-key"
 model = "claude-3-7-sonnet-latest"
+prompt_instructions = "Summarize in German. One short paragraph, plain text only."
 
 [ai.cli]
 prefer = "cli"
@@ -179,6 +180,7 @@ Notes:
 - `ai.cli.prefer` accepts `api`, `cli`, `claude`, `codex`, `opencode`, or `cursor-agent`
 - `ai.model` applies to direct API providers only; CLI tools use their own default model selection
 - `ai.api_key` in the config file overrides environment variables
+- `ai.prompt_instructions` (optional): when set, replaces the default AI instructions (tone, language, length); period, commit count, and commit list are always appended. Use for a different language or more concise output. Empty or missing = default instructions.
 - If `ai.provider` is omitted and exactly one of `DIDDO_OPENAI_KEY` or `DIDDO_ANTHROPIC_KEY` is set, `diddo` infers the provider from that environment variable
 
 ## Uninstall
