@@ -1,0 +1,24 @@
+docs/plans/2026-03-10-ai-response-cache-design.md
+  c554cba493cb3586 1-46
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.8",
+  "base_commit_sha": "096b53677f55a52458b94611c44483c86768363a",
+  "prompts": {
+    "c554cba493cb3586": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "280a6001-1611-44d0-8071-79be44baa463",
+        "model": "default"
+      },
+      "human_author": "Nikita Bayev <nikita@bayev.kz>",
+      "messages": [],
+      "total_additions": 46,
+      "total_deletions": 0,
+      "accepted_lines": 46,
+      "overriden_lines": 0,
+      "messages_url": "https://usegitai.com/cas/08e133c48d97a6bc9e356886fc74a674d7e78902533b2285022df5b6d159df2f"
+    }
+  }
+}
