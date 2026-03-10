@@ -8,8 +8,9 @@ mod render;
 
 use clap::{ArgGroup, Args, Parser, Subcommand};
 use chrono::{Datelike, Duration, Local, NaiveDate};
+use indicatif::{ProgressBar, ProgressStyle};
 use sha2::{Digest, Sha256};
-use std::{cmp::Reverse, collections::BTreeMap, error::Error, ffi::OsString};
+use std::{cmp::Reverse, collections::BTreeMap, error::Error, ffi::OsString, io::IsTerminal, time::Duration as StdDuration};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -395,14 +396,36 @@ where
                 warning: None,
             }
         } else {
-            let attempt =
-                try_ai_summary(&config.ai, &commits, period, true, create_provider);
-            if let (Some(ref key), Some(ref summary)) =
-                (cache_key_opt.as_ref(), attempt.summary.as_ref())
-            {
-                let _ = database.set_cached_summary(key, summary);
+            let show_indicator = std::io::stderr().is_terminal();
+            if show_indicator {
+                let pb = ProgressBar::new_spinner();
+                pb.set_style(
+                    ProgressStyle::default_spinner()
+                        .template("{spinner} {msg}")
+                        .unwrap(),
+                );
+                pb.set_message("Generating AI summary...");
+                pb.enable_steady_tick(StdDuration::from_millis(80));
+                let attempt =
+                    try_ai_summary(&config.ai, &commits, period, true, create_provider);
+                pb.finish_and_clear();
+                if let (Some(ref key), Some(ref summary)) =
+                    (cache_key_opt.as_ref(), attempt.summary.as_ref())
+                {
+                    let _ = database.set_cached_summary(key, summary);
+                }
+                attempt
+            } else {
+                eprintln!("Generating AI summary...");
+                let attempt =
+                    try_ai_summary(&config.ai, &commits, period, true, create_provider);
+                if let (Some(ref key), Some(ref summary)) =
+                    (cache_key_opt.as_ref(), attempt.summary.as_ref())
+                {
+                    let _ = database.set_cached_summary(key, summary);
+                }
+                attempt
             }
-            attempt
         }
     } else {
         AiSummaryAttempt {
