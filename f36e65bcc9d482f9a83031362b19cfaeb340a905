@@ -1,0 +1,24 @@
+Cargo.toml
+  c554cba493cb3586 17
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.8",
+  "base_commit_sha": "f36e65bcc9d482f9a83031362b19cfaeb340a905",
+  "prompts": {
+    "c554cba493cb3586": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "280a6001-1611-44d0-8071-79be44baa463",
+        "model": "default"
+      },
+      "human_author": "Nikita Bayev <nikita@bayev.kz>",
+      "messages": [],
+      "total_additions": 298,
+      "total_deletions": 0,
+      "accepted_lines": 298,
+      "overriden_lines": 0,
+      "messages_url": "https://usegitai.com/cas/6eb7ec2543cd39a5bec6f36ddf9a3d84f121c4e42e50f26a01a69220923d9bf6"
+    }
+  }
+}
