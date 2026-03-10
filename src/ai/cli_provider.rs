@@ -54,11 +54,15 @@ impl CliTool {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CliProvider {
     tool: CliTool,
+    prompt_instructions: Option<String>,
 }
 
 impl CliProvider {
-    pub fn new(tool: CliTool) -> Self {
-        Self { tool }
+    pub fn new(tool: CliTool, prompt_instructions: Option<String>) -> Self {
+        Self {
+            tool,
+            prompt_instructions,
+        }
     }
 
     #[allow(dead_code)]
@@ -71,7 +75,7 @@ impl CliProvider {
     where
         F: FnMut(CliTool, &str) -> io::Result<String>,
     {
-        let prompt = build_prompt(commits, period, None);
+        let prompt = build_prompt(commits, period, self.prompt_instructions.as_deref());
         let summary = run_cli(self.tool, &prompt)?;
         let trimmed = summary.trim();
 
@@ -219,7 +223,7 @@ mod tests {
 
     #[test]
     fn trims_cli_output_before_returning_summary() {
-        let provider = CliProvider::new(CliTool::Claude);
+        let provider = CliProvider::new(CliTool::Claude, None);
         let commits = vec![sample_commit()];
 
         let summary = provider
@@ -235,7 +239,7 @@ mod tests {
 
     #[test]
     fn rejects_empty_cli_responses() {
-        let provider = CliProvider::new(CliTool::Codex);
+        let provider = CliProvider::new(CliTool::Codex, None);
         let error = provider
             .summarize_with_runner(&[sample_commit()], "today", |_tool, _prompt| {
                 Ok("   ".to_string())
@@ -247,7 +251,7 @@ mod tests {
 
     #[test]
     fn ignores_model_setting_for_cli_execution() {
-        let provider = CliProvider::new(CliTool::Claude);
+        let provider = CliProvider::new(CliTool::Claude, None);
         let summary = provider
             .summarize_with_runner(&[sample_commit()], "today", |_tool, _prompt| {
                 Ok("CLI summary".to_string())
@@ -259,7 +263,7 @@ mod tests {
 
     #[test]
     fn implements_ai_provider_trait() {
-        let provider = CliProvider::new(CliTool::Codex);
+        let provider = CliProvider::new(CliTool::Codex, None);
         let summary = provider
             .summarize_with_runner(&[sample_commit()], "week", |_tool, prompt| {
                 assert!(prompt.contains("Period: week"));
@@ -268,6 +272,18 @@ mod tests {
             .unwrap();
 
         assert_eq!(summary, "Weekly summary");
+    }
+
+    #[test]
+    fn uses_custom_prompt_instructions_when_provided() {
+        let provider = CliProvider::new(CliTool::Claude, Some("Custom.".to_string()));
+        let _ = provider
+            .summarize_with_runner(&[sample_commit()], "today", |_tool, prompt| {
+                assert!(prompt.starts_with("Custom."));
+                assert!(prompt.contains("Period: today"));
+                Ok("OK".to_string())
+            })
+            .unwrap();
     }
 
     fn sample_commit() -> Commit {

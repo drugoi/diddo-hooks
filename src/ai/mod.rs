@@ -65,7 +65,10 @@ pub fn create_provider(config: &AiConfig) -> Result<Box<dyn AiProvider>> {
     let providers = select_provider(config, &cli_provider::detect_installed_tools())?
         .into_iter()
         .map(|choice| match choice {
-            ProviderChoice::Cli(tool) => Ok(Box::new(CliProvider::new(tool)) as Box<dyn AiProvider>),
+            ProviderChoice::Cli(tool) => Ok(Box::new(CliProvider::new(
+                tool,
+                config.resolved_prompt_instructions().map(String::from),
+            )) as Box<dyn AiProvider>),
             ProviderChoice::Api(kind) => {
                 Ok(Box::new(ApiProvider::from_config(config, kind)?) as Box<dyn AiProvider>)
             }
