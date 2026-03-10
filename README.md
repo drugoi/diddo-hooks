@@ -85,7 +85,7 @@ diddo week --raw
 diddo today --no-cache
 ```
 
-- **`--no-cache`** — Skip the AI summary cache and force a fresh summary (useful after changing the prompt or when you want updated wording).
+- **`--no-cache`** — Skip the AI summary cache and force a fresh summary.
 
 Current CLI behavior:
 
