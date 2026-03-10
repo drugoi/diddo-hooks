@@ -1,0 +1,24 @@
+.cargo/config.toml
+  1b48be9d1a679d6a 1-2
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.8",
+  "base_commit_sha": "baf375a215e488ecda2d0e29975c6592ab59647d",
+  "prompts": {
+    "1b48be9d1a679d6a": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "fc8f68f8-6132-4e9e-8e62-1122633cb755",
+        "model": "default"
+      },
+      "human_author": "Nikita Bayev <nikita@bayev.kz>",
+      "messages": [],
+      "total_additions": 2,
+      "total_deletions": 0,
+      "accepted_lines": 2,
+      "overriden_lines": 0,
+      "messages_url": "https://usegitai.com/cas/5b443f9f83f357ff3c4847c5e7ae3bb018bf1be0d393afdc7001823a5a6eb5b1"
+    }
+  }
+}
