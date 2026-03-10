@@ -36,6 +36,10 @@ const SCHEMA: &str = "
         ON commits (committed_at, repo_name);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_commits_repo_path_hash
         ON commits (repo_path, hash);
+    CREATE TABLE IF NOT EXISTS ai_summary_cache (
+        cache_key TEXT PRIMARY KEY,
+        summary TEXT NOT NULL
+    );
 ";
 
 #[allow(dead_code)]
@@ -128,6 +132,26 @@ impl Database {
         let rows = statement.query_map(params![start, end], commit_from_row)?;
 
         rows.collect()
+    }
+
+    pub fn get_cached_summary(&self, cache_key: &str) -> Result<Option<String>> {
+        let mut stmt = self.connection.prepare(
+            "SELECT summary FROM ai_summary_cache WHERE cache_key = ?1",
+        )?;
+        let mut rows = stmt.query(params![cache_key])?;
+        if let Some(row) = rows.next()? {
+            let summary: String = row.get(0)?;
+            return Ok(Some(summary));
+        }
+        Ok(None)
+    }
+
+    pub fn set_cached_summary(&self, cache_key: &str, summary: &str) -> Result<()> {
+        self.connection.execute(
+            "INSERT OR REPLACE INTO ai_summary_cache (cache_key, summary) VALUES (?1, ?2)",
+            params![cache_key, summary],
+        )?;
+        Ok(())
     }
 }
 
