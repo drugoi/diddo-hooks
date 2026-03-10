@@ -1,0 +1,30 @@
+install.ps1
+  b878bae1cc1e1626 1-74
+src/init.rs
+  b878bae1cc1e1626 96,447-460,504,523,525
+README.md
+  b878bae1cc1e1626 9,11-13,25-36,38-39,41,67-68,77,79,87-100
+.github/workflows/release.yml
+  b878bae1cc1e1626 17,60-142,144,167
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.8",
+  "base_commit_sha": "a4e54389c5558334d2cf4b7f8cf0c00585ac919b",
+  "prompts": {
+    "b878bae1cc1e1626": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "c7c9f75a-4436-4952-9297-09978fdd92d3",
+        "model": "default"
+      },
+      "human_author": "Nikita Bayev <nikita@bayev.kz>",
+      "messages": [],
+      "total_additions": 224,
+      "total_deletions": 21,
+      "accepted_lines": 221,
+      "overriden_lines": 0,
+      "messages_url": "https://usegitai.com/cas/875708fb67b0fd0cb23da460a4a229c2380c1d503c5ba2234e87bc93a125caf9"
+    }
+  }
+}
