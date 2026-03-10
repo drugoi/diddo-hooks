@@ -77,11 +77,15 @@ Output modes:
 diddo --md
 diddo --json
 diddo --raw
+diddo --no-cache
 
 diddo today --md
 diddo yesterday --json
 diddo week --raw
+diddo today --no-cache
 ```
+
+- **`--no-cache`** — Skip the AI summary cache and force a fresh summary (useful after changing the prompt or when you want updated wording).
 
 Current CLI behavior:
 
@@ -102,6 +106,8 @@ diddo config
 ## AI Providers
 
 `diddo` is CLI-first by default.
+
+AI summaries are **cached** in the same SQLite database as your commits. When the commit set and period are unchanged (and you use the same provider/model), `diddo` returns the stored summary instead of calling the AI again. Use `--no-cache` to force a fresh summary.
 
 Without extra configuration, it tries installed AI CLIs in this order:
 
