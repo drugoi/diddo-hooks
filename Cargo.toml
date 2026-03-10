@@ -7,10 +7,10 @@ license = "MIT"
 
 [dependencies]
 clap = { version = "4.5.60", features = ["derive"] }
-chrono = "0.4.42"
+chrono = "0.4.44"
 rusqlite = { version = "0.38.0", features = ["bundled"] }
-directories = "5"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-toml = "0.9"
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+directories = "6.0.0"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+toml = "1.0.6"
+reqwest = { version = "0.13.2", default-features = false, features = ["blocking", "json", "rustls"] }

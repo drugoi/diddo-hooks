@@ -6,13 +6,25 @@ It installs a global `post-commit` hook, stores commit metadata in a local SQLit
 
 ## Install
 
-Build and install from this repo:
+Install the latest release (macOS; requires a [release](https://github.com/drugoi/diddo-hooks/releases) to exist):
+
+```bash
+curl -sSL https://raw.githubusercontent.com/drugoi/diddo-hooks/main/install.sh | sh
+```
+
+To pin a version:
+
+```bash
+DIDDO_VERSION=0.1.0 curl -sSL https://raw.githubusercontent.com/drugoi/diddo-hooks/main/install.sh | sh
+```
+
+Or build and install from source:
 
 ```bash
 cargo install --path .
 ```
 
-If you just want to try it without installing, you can also run it with Cargo:
+To try it without installing:
 
 ```bash
 cargo run -- --help
