@@ -89,7 +89,7 @@ impl ApiProvider {
     where
         F: FnMut(ApiKind, &str, &str, &str) -> Result<String>,
     {
-        let prompt = build_prompt(commits, period);
+        let prompt = build_prompt(commits, period, None);
         request(self.kind, &self.api_key, &self.model, &prompt)
     }
 }

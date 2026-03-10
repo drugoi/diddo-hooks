@@ -71,7 +71,7 @@ impl CliProvider {
     where
         F: FnMut(CliTool, &str) -> io::Result<String>,
     {
-        let prompt = build_prompt(commits, period);
+        let prompt = build_prompt(commits, period, None);
         let summary = run_cli(self.tool, &prompt)?;
         let trimmed = summary.trim();
 

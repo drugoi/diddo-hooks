@@ -217,7 +217,34 @@ impl AiProvider for FallbackProvider {
 }
 
 #[allow(dead_code)]
-pub fn build_prompt(commits: &[Commit], period: &str) -> String {
+pub fn build_prompt(commits: &[Commit], period: &str, instructions_override: Option<&str>) -> String {
+    if let Some(s) = instructions_override {
+        let mut prompt = s.to_string();
+        prompt.push_str(&format!(
+            "\n\nPeriod: {period}\nCommit count: {}\n\nCommits:\n",
+            commits.len()
+        ));
+        if commits.is_empty() {
+            prompt.push_str("- No recorded commits.\n");
+        } else {
+            for (index, commit) in commits.iter().enumerate() {
+                prompt.push_str(&format!(
+                    "{}. [{}] {} ({}) on {} at {}; files: {}, +{}, -{}\n",
+                    index + 1,
+                    commit.repo_name,
+                    commit.message,
+                    commit.hash,
+                    commit.branch,
+                    commit.committed_at.to_rfc3339(),
+                    commit.files_changed,
+                    commit.insertions,
+                    commit.deletions
+                ));
+            }
+        }
+        return prompt;
+    }
+
     let mut prompt = format!(
         "You are summarizing git activity for {period}.\n\
          Write a concise status update with the main themes, notable repos, and momentum.\n\
@@ -419,11 +446,33 @@ mod tests {
 
     #[test]
     fn prompt_includes_period_and_commit_details() {
-        let prompt = build_prompt(&[sample_commit()], "today");
+        let prompt = build_prompt(&[sample_commit()], "today", None);
 
         assert!(prompt.contains("Period: today"));
         assert!(prompt.contains("[diddo] feat: add AI summaries"));
         assert!(prompt.contains("files: 4, +28, -6"));
+    }
+
+    #[test]
+    fn build_prompt_with_custom_instructions_uses_override_and_structured_block() {
+        let commits = vec![sample_commit()];
+        let prompt = build_prompt(&commits, "today", Some("Custom instructions here."));
+
+        assert!(prompt.starts_with("Custom instructions here."));
+        assert!(prompt.contains("Period: today"));
+        assert!(prompt.contains("Commit count: 1"));
+        assert!(prompt.contains("[diddo] feat: add AI summaries"));
+        assert!(!prompt.contains("Return plain text only"));
+    }
+
+    #[test]
+    fn build_prompt_with_none_uses_default_instructions() {
+        let commits = vec![sample_commit()];
+        let prompt = build_prompt(&commits, "week", None);
+
+        assert!(prompt.contains("You are summarizing git activity for week."));
+        assert!(prompt.contains("Return plain text only. Keep it brief"));
+        assert!(prompt.contains("Period: week"));
     }
 
     #[test]
