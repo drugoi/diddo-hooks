@@ -64,6 +64,10 @@ struct SummaryArgs {
     /// Output as JSON.
     #[arg(long)]
     json: bool,
+
+    /// Skip cache and force a fresh AI summary.
+    #[arg(long)]
+    no_cache: bool,
 }
 
 #[derive(Subcommand, Debug, Clone, Copy, PartialEq, Eq)]
@@ -214,6 +218,7 @@ fn run_summary_command(cli: ParsedCli) -> Result<(), Box<dyn Error>> {
     let window = resolve_summary_window(period, today);
     let commits = load_commits_for_window(&database, &window)?;
     let rendered = render_summary_output(
+        &database,
         summary_args,
         window,
         commits,
@@ -349,6 +354,7 @@ where
 }
 
 fn render_summary_output<FConfig, FProvider>(
+    database: &db::Database,
     summary_args: SummaryArgs,
     window: SummaryWindow,
     commits: Vec<db::Commit>,
@@ -368,7 +374,32 @@ where
 
     let ai_attempt = if should_try_ai_summary(summary_args) {
         let config = load_config()?;
-        try_ai_summary(&config.ai, &commits, window.ai_period, true, create_provider)
+        let period = window.ai_period;
+        let prompt = ai::build_prompt(&commits, period);
+        let cache_key_opt = ai::primary_provider_identity(&config.ai)
+            .ok()
+            .map(|(provider_id, model_id)| {
+                compute_cache_key(&provider_id, &model_id, period, &prompt)
+            });
+        let cached = match (cache_key_opt.as_deref(), summary_args.no_cache) {
+            (Some(key), false) => database.get_cached_summary(key).ok().flatten(),
+            _ => None,
+        };
+        if let Some(cached_summary) = cached {
+            AiSummaryAttempt {
+                summary: Some(cached_summary),
+                warning: None,
+            }
+        } else {
+            let attempt =
+                try_ai_summary(&config.ai, &commits, period, true, create_provider);
+            if let (Some(ref key), Some(ref summary)) =
+                (cache_key_opt.as_ref(), attempt.summary.as_ref())
+            {
+                let _ = database.set_cached_summary(key, summary);
+            }
+            attempt
+        }
     } else {
         AiSummaryAttempt {
             summary: None,
@@ -490,6 +521,7 @@ mod tests {
                     md: true,
                     raw: false,
                     json: false,
+                    no_cache: false,
                 },
             }
         );
@@ -499,6 +531,7 @@ mod tests {
                 md: false,
                 raw: true,
                 json: false,
+                no_cache: false,
             }))
         );
         assert_eq!(
@@ -507,6 +540,7 @@ mod tests {
                 md: false,
                 raw: false,
                 json: true,
+                no_cache: false,
             }))
         );
         assert_eq!(
@@ -515,6 +549,7 @@ mod tests {
                 md: false,
                 raw: true,
                 json: false,
+                no_cache: false,
             }))
         );
     }
@@ -592,6 +627,7 @@ mod tests {
                     md: true,
                     raw: false,
                     json: false,
+                    no_cache: false,
                 }
             ))
         );
@@ -617,16 +653,19 @@ mod tests {
             md: true,
             raw: false,
             json: false,
+            no_cache: false,
         }));
         assert!(should_try_ai_summary(SummaryArgs {
             md: false,
             raw: false,
             json: true,
+            no_cache: false,
         }));
         assert!(!should_try_ai_summary(SummaryArgs {
             md: false,
             raw: true,
             json: false,
+            no_cache: false,
         }));
     }
 
@@ -642,6 +681,7 @@ mod tests {
                 md: false,
                 raw: false,
                 json: true,
+                no_cache: false,
             }),
             |_config| Ok(Box::new(SuccessProvider("JSON summary".to_string()))),
         );
@@ -701,6 +741,7 @@ mod tests {
                 md: true,
                 raw: false,
                 json: false,
+                no_cache: false,
             }),
             OutputFormat::Markdown
         );
@@ -709,6 +750,7 @@ mod tests {
                 md: false,
                 raw: false,
                 json: true,
+                no_cache: false,
             }),
             OutputFormat::Json
         );
@@ -747,6 +789,7 @@ mod tests {
                 md: true,
                 raw: false,
                 json: false,
+                no_cache: false,
             },
         );
         let json = render_empty_summary(
@@ -755,6 +798,7 @@ mod tests {
                 md: false,
                 raw: false,
                 json: true,
+                no_cache: false,
             },
         );
 
@@ -781,11 +825,14 @@ mod tests {
             NaiveDate::from_ymd_opt(2026, 3, 10).unwrap(),
         );
 
+        let database = crate::db::Database::open_in_memory().unwrap();
         let rendered = render_summary_output(
+            &database,
             SummaryArgs {
                 md: false,
                 raw: false,
                 json: true,
+                no_cache: false,
             },
             window,
             Vec::new(),
