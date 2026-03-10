@@ -55,6 +55,7 @@ pub struct ApiProvider {
     kind: ApiKind,
     api_key: String,
     model: String,
+    prompt_instructions: Option<String>,
     client: Client,
 }
 
@@ -66,15 +67,22 @@ impl ApiProvider {
         let model = config
             .resolved_model()
             .unwrap_or_else(|| kind.default_model().to_string());
+        let prompt_instructions = config.resolved_prompt_instructions().map(String::from);
 
-        Ok(Self::new(kind, api_key, model))
+        Ok(Self::new(kind, api_key, model, prompt_instructions))
     }
 
-    pub fn new(kind: ApiKind, api_key: String, model: String) -> Self {
+    pub fn new(
+        kind: ApiKind,
+        api_key: String,
+        model: String,
+        prompt_instructions: Option<String>,
+    ) -> Self {
         Self {
             kind,
             api_key,
             model,
+            prompt_instructions,
             client: Client::new(),
         }
     }
@@ -89,7 +97,7 @@ impl ApiProvider {
     where
         F: FnMut(ApiKind, &str, &str, &str) -> Result<String>,
     {
-        let prompt = build_prompt(commits, period, None);
+        let prompt = build_prompt(commits, period, self.prompt_instructions.as_deref());
         request(self.kind, &self.api_key, &self.model, &prompt)
     }
 }
@@ -335,6 +343,7 @@ mod tests {
             ApiKind::Anthropic,
             "anthropic-key".to_string(),
             "claude-3-7-sonnet-latest".to_string(),
+            None,
         );
         let summary = provider
             .summarize_with_client(
