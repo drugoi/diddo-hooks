@@ -1,0 +1,29 @@
+install.sh
+  a146ed84bdc6d608 1-83
+.github/workflows/release.yml
+  a146ed84bdc6d608 1-97
+README.md
+  a146ed84bdc6d608 9,12-21,27
+Cargo.toml
+  a146ed84bdc6d608 10,12-16
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.8",
+  "base_commit_sha": "d3c576fbabf94835876f856a664b7e21553e3884",
+  "prompts": {
+    "a146ed84bdc6d608": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "d65b2fda-cd50-4428-a200-ab683e1a1ccc",
+        "model": "gpt-5.4-medium"
+      },
+      "human_author": "Nikita Bayev <drugoi@MiniMe.local>",
+      "messages": [],
+      "total_additions": 211,
+      "total_deletions": 19,
+      "accepted_lines": 200,
+      "overriden_lines": 0
+    }
+  }
+}
