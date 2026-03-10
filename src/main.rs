@@ -497,14 +497,79 @@ mod tests {
 
     use super::{
         AiSummaryAttempt, Commands, OutputFormat, ParsedCli, SummaryArgs, SummaryPeriod,
-        build_summary_data, format_commit_time, format_config_paths, output_format, parse_cli,
-        render_empty_summary, render_summary_output, resolve_summary_window,
+        build_summary_data, compute_cache_key, format_commit_time, format_config_paths,
+        output_format, parse_cli, render_empty_summary, render_summary_output, resolve_summary_window,
         should_try_ai_summary, summary_request_from_cli, try_ai_summary,
     };
     use crate::{
         ai::{AiError, AiProvider},
+        config::{AppConfig, AiConfig, AiCliConfig},
         paths::AppPaths,
     };
+
+    #[test]
+    fn cache_key_is_deterministic_and_different_for_different_inputs() {
+        let prompt = "Period: today\n\n1. [repo] fix: bug (abc) on main at 2026-03-10T12:00:00Z\n";
+        let key1 = compute_cache_key("openai", "gpt-4.1-mini", "today", prompt);
+        let key2 = compute_cache_key("openai", "gpt-4.1-mini", "today", prompt);
+        assert_eq!(key1, key2);
+
+        let key3 = compute_cache_key("anthropic", "gpt-4.1-mini", "today", prompt);
+        assert_ne!(key1, key3);
+        let key4 = compute_cache_key("openai", "other-model", "today", prompt);
+        assert_ne!(key1, key4);
+        let key5 = compute_cache_key("openai", "gpt-4.1-mini", "yesterday", prompt);
+        assert_ne!(key1, key5);
+        let key6 = compute_cache_key("openai", "gpt-4.1-mini", "today", "different prompt");
+        assert_ne!(key1, key6);
+    }
+
+    #[test]
+    fn cache_hit_returns_stored_summary() {
+        use crate::db::Database;
+
+        let database = Database::open_in_memory().unwrap();
+        let config = AppConfig {
+            ai: AiConfig {
+                provider: Some("openai".to_string()),
+                api_key: Some("test-key".to_string()),
+                model: Some("gpt-4.1-mini".to_string()),
+                cli: AiCliConfig {
+                    prefer: Some("api".to_string()),
+                },
+                ..AiConfig::default()
+            },
+            ..AppConfig::default()
+        };
+        let commits = vec![sample_commit("abc123", "diddo", "/tmp/diddo", 9, 15)];
+        let period = "today";
+        let prompt = crate::ai::build_prompt(&commits, period);
+        let (provider_id, model_id) = crate::ai::primary_provider_identity(&config.ai).unwrap();
+        let key = compute_cache_key(&provider_id, &model_id, period, &prompt);
+        database.set_cached_summary(&key, "Pre-cached summary").unwrap();
+
+        let window = resolve_summary_window(
+            SummaryPeriod::Today,
+            NaiveDate::from_ymd_opt(2026, 3, 10).unwrap(),
+        );
+        let rendered = render_summary_output(
+            &database,
+            SummaryArgs {
+                md: false,
+                raw: false,
+                json: true,
+                no_cache: false,
+            },
+            window,
+            commits,
+            || Ok(config.clone()),
+            |_| Ok(Box::new(FailingProvider("should not be called".to_string()))),
+        )
+        .unwrap();
+
+        assert!(rendered.output.contains("Pre-cached summary"));
+        assert_eq!(rendered.warning, None);
+    }
 
     #[test]
     fn parses_one_summary_output_flag_for_today_and_subcommands() {

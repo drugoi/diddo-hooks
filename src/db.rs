@@ -442,6 +442,25 @@ mod tests {
     }
 
     #[test]
+    fn cache_round_trip_stores_and_retrieves_summary() {
+        let database = Database::open_in_memory().unwrap();
+        let key = "abc123def456";
+        let summary = "Today I fixed the login bug and refactored the API.";
+
+        assert!(database.get_cached_summary(key).unwrap().is_none());
+        database.set_cached_summary(key, summary).unwrap();
+        assert_eq!(
+            database.get_cached_summary(key).unwrap().as_deref(),
+            Some(summary)
+        );
+        database.set_cached_summary(key, "Updated summary").unwrap();
+        assert_eq!(
+            database.get_cached_summary(key).unwrap().as_deref(),
+            Some("Updated summary")
+        );
+    }
+
+    #[test]
     fn local_day_bounds_convert_to_utc_range() {
         let timezone = FixedOffset::east_opt(2 * 60 * 60).unwrap();
         let date = NaiveDate::from_ymd_opt(2026, 3, 10).unwrap();
