@@ -93,7 +93,7 @@ fn build_post_commit_script(previous_hooks_path: Option<&str>) -> String {
         Ok(Some(diddo_path)) => {
             script.push_str(&format!(
                 "diddo_path={}\nif [ -x \"$diddo_path\" ]; then\n  \"$diddo_path\" hook || diddo_status=$?\nelse\n  diddo hook || diddo_status=$?\nfi\n",
-                shell_single_quote(&diddo_path.to_string_lossy())
+                shell_single_quote(&path_for_script(&diddo_path))
             ));
         }
         _ => script.push_str("diddo hook || diddo_status=$?\n"),
@@ -444,6 +444,20 @@ fn shell_single_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
+/// Path string for embedding in shell scripts. On Windows, uses forward slashes so sh/Git Bash
+/// sees a single path; on Unix unchanged.
+fn path_for_script(path: &Path) -> std::borrow::Cow<'_, str> {
+    let s = path.to_string_lossy();
+    #[cfg(windows)]
+    {
+        std::borrow::Cow::Owned(s.replace('\\', "/"))
+    }
+    #[cfg(not(windows))]
+    {
+        s
+    }
+}
+
 fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .map(PathBuf::from)
@@ -487,7 +501,7 @@ mod tests {
 
     use super::{
         HookPathState, STATE_FILE, build_forwarding_hook_script, build_post_commit_script,
-        install_with, resolve_diddo_executable, resolve_hooks_path_for_comparison,
+        install_with, path_for_script, resolve_diddo_executable, resolve_hooks_path_for_comparison,
         uninstall_with,
     };
     use crate::paths::AppPaths;
@@ -506,8 +520,9 @@ mod tests {
         let diddo_path = resolve_diddo_executable()
             .unwrap()
             .expect("current executable should be resolvable in tests");
+        let path_in_script = path_for_script(&diddo_path);
 
-        assert!(script.contains(&format!("diddo_path='{}'", diddo_path.display())));
+        assert!(script.contains(&format!("diddo_path='{}'", path_in_script)));
         assert!(script.contains("if [ -x \"$diddo_path\" ]; then"));
         assert!(script.contains("\"$diddo_path\" hook || diddo_status=$?"));
         assert!(script.contains("else\n  diddo hook || diddo_status=$?\nfi"));

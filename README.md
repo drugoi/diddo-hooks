@@ -6,7 +6,11 @@ It installs a global `post-commit` hook, stores commit metadata in a local SQLit
 
 ## Install
 
-Install the latest release (macOS; requires a [release](https://github.com/drugoi/diddo-hooks/releases) to exist):
+Supported platforms: **macOS** (Apple Silicon, Intel), **Linux** (x86_64, aarch64), **Windows** (x86_64, ARM64). Pre-built binaries are published for each [release](https://github.com/drugoi/diddo-hooks/releases).
+
+### macOS and Linux
+
+Install the latest release:
 
 ```bash
 curl -sSL https://raw.githubusercontent.com/drugoi/diddo-hooks/main/install.sh | sh
@@ -18,13 +22,29 @@ To pin a version:
 DIDDO_VERSION=0.1.0 curl -sSL https://raw.githubusercontent.com/drugoi/diddo-hooks/main/install.sh | sh
 ```
 
-Or build and install from source:
+### Windows (PowerShell)
+
+Install the latest release (run PowerShell as current user):
+
+```powershell
+irm https://raw.githubusercontent.com/drugoi/diddo-hooks/main/install.ps1 | iex
+```
+
+To pin a version:
+
+```powershell
+$env:DIDDO_VERSION = "0.1.0"; irm https://raw.githubusercontent.com/drugoi/diddo-hooks/main/install.ps1 | iex
+```
+
+Alternatively, download the `diddo-<version>-x86_64-pc-windows-msvc.zip` (or ARM64) from [Releases](https://github.com/drugoi/diddo-hooks/releases), extract `diddo.exe`, and add the folder to your PATH.
+
+### From source (all platforms)
 
 ```bash
 cargo install --path .
 ```
 
-To try it without installing:
+To try without installing:
 
 ```bash
 cargo run -- --help
@@ -44,6 +64,8 @@ What `diddo init` does:
 - Sets global git `core.hooksPath` to that directory
 - Preserves and forwards any previously configured global hooks so existing hooks keep running
 
+On **Windows**, global hooks run only if you use **Git for Windows** (or another Git that runs hook scripts with a Unix-like shell). The generated hooks are `#!/bin/sh` scripts; Git for Windows runs them with its bundled sh.
+
 `diddo` only records commits made after setup. It does not backfill old git history into the database.
 
 To see where `diddo` stores its config, database, and managed hooks on your machine:
@@ -52,12 +74,30 @@ To see where `diddo` stores its config, database, and managed hooks on your mach
 diddo config
 ```
 
-On macOS, that currently looks like:
+Example output:
+
+**macOS:**
 
 ```text
 Config file: /Users/you/Library/Application Support/diddo/config.toml
 Database path: /Users/you/Library/Application Support/diddo/commits.db
 Hooks dir: /Users/you/Library/Application Support/diddo/hooks
+```
+
+**Linux:**
+
+```text
+Config file: /home/you/.config/diddo/config.toml
+Database path: /home/you/.local/share/diddo/commits.db
+Hooks dir: /home/you/.config/diddo/hooks
+```
+
+**Windows:**
+
+```text
+Config file: C:\Users\you\AppData\Roaming\diddo\config.toml
+Database path: C:\Users\you\AppData\Local\diddo\commits.db
+Hooks dir: C:\Users\you\AppData\Roaming\diddo\hooks
 ```
 
 ## Usage

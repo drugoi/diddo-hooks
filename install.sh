@@ -54,15 +54,6 @@ if [ "$TARGET" = "unsupported" ]; then
   exit 1
 fi
 
-# Linux builds are optional in the release workflow; only macOS is guaranteed for MVP.
-case "$TARGET" in
-  *-apple-darwin) ;;
-  *)
-    echo "Pre-built binaries for $TARGET may not be available yet. Try building from source: cargo install --git ${BASE_URL}" >&2
-    exit 1
-    ;;
-esac
-
 VERSION=$(get_version) || exit 1
 TARBALL="diddo-${VERSION}-${TARGET}.tar.gz"
 URL="${BASE_URL}/releases/download/v${VERSION}/${TARBALL}"
