@@ -1,0 +1,24 @@
+README.md
+  894115112c72ef94 7-8
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.8",
+  "base_commit_sha": "3fe2354b6ae5701eae73aaa07443043473b5d682",
+  "prompts": {
+    "894115112c72ef94": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "abdab6ac-c715-40f9-ba10-f62b30ecfc8c",
+        "model": "default"
+      },
+      "human_author": "Nikita Bayev <nikita@bayev.kz>",
+      "messages": [],
+      "total_additions": 2,
+      "total_deletions": 0,
+      "accepted_lines": 2,
+      "overriden_lines": 0,
+      "messages_url": "https://usegitai.com/cas/0398cde7d8802dad730f5c112c56cb025ec2bf2fbba6e6447564d1adfa284d52"
+    }
+  }
+}
