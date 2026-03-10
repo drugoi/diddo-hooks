@@ -107,6 +107,8 @@ Without extra configuration, it tries installed AI CLIs in this order:
 
 1. `claude`
 2. `codex`
+3. `opencode`
+4. `cursor`
 
 If no supported CLI is available, `diddo` falls back to a direct API provider when configuration and credentials are available.
 
@@ -116,7 +118,7 @@ If neither CLI tools nor a usable API configuration are available, `diddo` falls
 
 - Default behavior: try detected CLI tools first, then try API
 - `ai.cli.prefer = "cli"`: keep CLI-first behavior, then API fallback if configured
-- `ai.cli.prefer = "claude"` or `"codex"`: force that CLI first, then API fallback if configured
+- `ai.cli.prefer = "claude"`, `"codex"`, `"opencode"`, or `"cursor-agent"`: force that CLI first, then API fallback if configured
 - `ai.cli.prefer = "api"`: skip CLI detection and use API only
 
 Supported API providers:
@@ -168,7 +170,7 @@ export DIDDO_ANTHROPIC_KEY=your-anthropic-key
 Notes:
 
 - `ai.provider` accepts `openai` or `anthropic`
-- `ai.cli.prefer` accepts `api`, `cli`, `claude`, or `codex`
+- `ai.cli.prefer` accepts `api`, `cli`, `claude`, `codex`, `opencode`, or `cursor-agent`
 - `ai.model` applies to direct API providers only; CLI tools use their own default model selection
 - `ai.api_key` in the config file overrides environment variables
 - If `ai.provider` is omitted and exactly one of `DIDDO_OPENAI_KEY` or `DIDDO_ANTHROPIC_KEY` is set, `diddo` infers the provider from that environment variable

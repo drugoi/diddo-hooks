@@ -9,6 +9,8 @@ use crate::{
 pub enum CliTool {
     Claude,
     Codex,
+    Opencode,
+    CursorAgent,
 }
 
 #[allow(dead_code)]
@@ -17,6 +19,8 @@ impl CliTool {
         match name {
             "claude" => Some(Self::Claude),
             "codex" => Some(Self::Codex),
+            "opencode" => Some(Self::Opencode),
+            "cursor-agent" | "cursor_agent" => Some(Self::CursorAgent),
             _ => None,
         }
     }
@@ -25,15 +29,22 @@ impl CliTool {
         match self {
             Self::Claude => "claude",
             Self::Codex => "codex",
+            Self::Opencode => "opencode",
+            Self::CursorAgent => "cursor",
         }
     }
 
     pub fn display_name(self) -> &'static str {
-        self.binary_name()
+        match self {
+            Self::Claude => "claude",
+            Self::Codex => "codex",
+            Self::Opencode => "opencode",
+            Self::CursorAgent => "cursor-agent",
+        }
     }
 
     pub fn preferred_available(available_tools: &[Self]) -> Option<Self> {
-        [Self::Claude, Self::Codex]
+        [Self::Claude, Self::Codex, Self::Opencode, Self::CursorAgent]
             .into_iter()
             .find(|tool| available_tools.contains(tool))
     }
@@ -83,7 +94,7 @@ impl AiProvider for CliProvider {
 
 #[allow(dead_code)]
 pub fn detect_installed_tools() -> Vec<CliTool> {
-    [CliTool::Claude, CliTool::Codex]
+    [CliTool::Claude, CliTool::Codex, CliTool::Opencode, CliTool::CursorAgent]
         .into_iter()
         .filter(|tool| command_exists(tool.binary_name()))
         .collect()
@@ -171,6 +182,15 @@ fn run_cli_command(tool: CliTool, prompt: &str) -> io::Result<String> {
         CliTool::Codex => {
             command.arg("exec");
             command.arg(prompt);
+        }
+        CliTool::Opencode => {
+            command.arg("run");
+            command.arg(prompt);
+        }
+        CliTool::CursorAgent => {
+            command.arg("agent");
+            command.arg(prompt);
+            command.arg("--no-interactive");
         }
     }
 

@@ -88,7 +88,7 @@ fn select_provider(
             _ => {
                 let Some(tool) = CliTool::from_name(preference) else {
                     return Err(AiError::new(format!(
-                        "invalid ai.cli.prefer value: {preference} (expected one of: api, cli, claude, codex)"
+                        "invalid ai.cli.prefer value: {preference} (expected one of: api, cli, claude, codex, opencode, cursor-agent)"
                     )));
                 };
 
@@ -341,7 +341,7 @@ mod tests {
 
         assert_eq!(
             error.to_string(),
-            "invalid ai.cli.prefer value: claud (expected one of: api, cli, claude, codex)"
+            "invalid ai.cli.prefer value: claud (expected one of: api, cli, claude, codex, opencode, cursor-agent)"
         );
     }
 
