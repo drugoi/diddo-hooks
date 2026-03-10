@@ -164,6 +164,29 @@ fn try_select_api_provider(config: &AiConfig, required: bool) -> Result<Option<P
 }
 
 #[allow(dead_code)]
+pub fn primary_provider_identity(config: &AiConfig) -> Result<(String, String)> {
+    let choices = select_provider(config, &cli_provider::detect_installed_tools())?;
+    let first = choices
+        .first()
+        .ok_or_else(|| AiError::new("no AI provider configured or detected"))?;
+    Ok(match first {
+        ProviderChoice::Cli(tool) => (
+            tool.display_name().to_ascii_lowercase(),
+            "default".to_string(),
+        ),
+        ProviderChoice::Api(kind) => {
+            let id = config
+                .resolved_provider()
+                .unwrap_or_else(|| kind.display_name().to_ascii_lowercase());
+            let model = config
+                .resolved_model()
+                .unwrap_or_else(|| kind.default_model().to_string());
+            (id, model)
+        }
+    })
+}
+
+#[allow(dead_code)]
 struct FallbackProvider {
     providers: Vec<Box<dyn AiProvider>>,
 }

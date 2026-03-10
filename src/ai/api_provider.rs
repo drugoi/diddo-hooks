@@ -34,7 +34,7 @@ impl ApiKind {
         }
     }
 
-    fn default_model(self) -> &'static str {
+    pub(crate) fn default_model(self) -> &'static str {
         match self {
             Self::OpenAi => "gpt-4.1-mini",
             Self::Anthropic => "claude-3-7-sonnet-latest",
