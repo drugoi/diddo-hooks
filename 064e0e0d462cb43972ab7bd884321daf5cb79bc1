@@ -1,0 +1,27 @@
+README.md
+  a146ed84bdc6d608 110-111,121,173
+src/ai/cli_provider.rs
+  a146ed84bdc6d608 12-13,22-23,32-33,38-43,47,97,186-194
+src/ai/mod.rs
+  a146ed84bdc6d608 91,344
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.8",
+  "base_commit_sha": "064e0e0d462cb43972ab7bd884321daf5cb79bc1",
+  "prompts": {
+    "a146ed84bdc6d608": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "d65b2fda-cd50-4428-a200-ab683e1a1ccc",
+        "model": "default"
+      },
+      "human_author": "Nikita Bayev <drugoi@MiniMe.local>",
+      "messages": [],
+      "total_additions": 44,
+      "total_deletions": 22,
+      "accepted_lines": 31,
+      "overriden_lines": 0
+    }
+  }
+}
