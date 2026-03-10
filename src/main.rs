@@ -375,7 +375,11 @@ where
     let ai_attempt = if should_try_ai_summary(summary_args) {
         let config = load_config()?;
         let period = window.ai_period;
-        let prompt = ai::build_prompt(&commits, period, None);
+        let prompt = ai::build_prompt(
+            &commits,
+            period,
+            config.ai.resolved_prompt_instructions(),
+        );
         let cache_key_opt = ai::primary_provider_identity(&config.ai)
             .ok()
             .map(|(provider_id, model_id)| {
@@ -543,7 +547,11 @@ mod tests {
         };
         let commits = vec![sample_commit("abc123", "diddo", "/tmp/diddo", 9, 15)];
         let period = "today";
-        let prompt = crate::ai::build_prompt(&commits, period, None);
+        let prompt = crate::ai::build_prompt(
+            &commits,
+            period,
+            config.ai.resolved_prompt_instructions(),
+        );
         let (provider_id, model_id) = crate::ai::primary_provider_identity(&config.ai).unwrap();
         let key = compute_cache_key(&provider_id, &model_id, period, &prompt);
         database.set_cached_summary(&key, "Pre-cached summary").unwrap();
