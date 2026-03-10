@@ -8,6 +8,7 @@ mod render;
 
 use clap::{ArgGroup, Args, Parser, Subcommand};
 use chrono::{Datelike, Duration, Local, NaiveDate};
+use sha2::{Digest, Sha256};
 use std::{cmp::Reverse, collections::BTreeMap, error::Error, ffi::OsString};
 
 #[derive(Parser, Debug)]
@@ -280,6 +281,18 @@ fn load_commits_for_window(
 
 fn should_try_ai_summary(summary_args: SummaryArgs) -> bool {
     !summary_args.raw
+}
+
+fn compute_cache_key(provider_id: &str, model_id: &str, period: &str, prompt: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(provider_id.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(model_id.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(period.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(prompt.as_bytes());
+    format!("{:x}", hasher.finalize())
 }
 
 fn output_format(summary_args: SummaryArgs) -> OutputFormat {
