@@ -1,0 +1,23 @@
+README.md
+  894115112c72ef94 7-8
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.8",
+  "base_commit_sha": "a81d63d16589c82a5899e27dca95ecfc5c16f3fb",
+  "prompts": {
+    "894115112c72ef94": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "abdab6ac-c715-40f9-ba10-f62b30ecfc8c",
+        "model": "default"
+      },
+      "human_author": null,
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 2,
+      "overriden_lines": 0
+    }
+  }
+}
