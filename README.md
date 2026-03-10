@@ -4,6 +4,8 @@
 
 It installs a global `post-commit` hook, stores commit metadata in a local SQLite database, and can summarize that history with an AI CLI tool or a direct API provider.
 
+![diddo today output](assets/diddo.png)
+
 ## Install
 
 Supported platforms: **macOS** (Apple Silicon, Intel), **Linux** (x86_64, aarch64), **Windows** (x86_64, ARM64). Pre-built binaries are published for each [release](https://github.com/drugoi/diddo-hooks/releases).
