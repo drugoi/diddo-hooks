@@ -14,6 +14,7 @@ pub struct AiConfig {
     pub provider: Option<String>,
     pub api_key: Option<String>,
     pub model: Option<String>,
+    pub prompt_instructions: Option<String>,
     pub cli: AiCliConfig,
 }
 
@@ -68,6 +69,13 @@ impl AiConfig {
             Some("anthropic") => read_env("DIDDO_ANTHROPIC_KEY"),
             _ => None,
         }
+    }
+
+    pub fn resolved_prompt_instructions(&self) -> Option<&str> {
+        self.prompt_instructions
+            .as_deref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
     }
 }
 
@@ -356,6 +364,57 @@ prefer = "  CoDeX  "
             Some("codex")
         );
         assert_eq!(config.ai.resolved_model().as_deref(), Some("gpt-4.1-mini"));
+
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn parses_prompt_instructions_from_toml() {
+        let temp = temp_dir("prompt-instructions-parse");
+        let config_path = temp.join("config.toml");
+
+        fs::write(
+            &config_path,
+            r#"[ai]
+prompt_instructions = " Summarize in German. One paragraph. "
+"#,
+        )
+        .unwrap();
+
+        let config = AppConfig::load(&config_path).unwrap();
+
+        assert_eq!(
+            config.ai.prompt_instructions.as_deref(),
+            Some(" Summarize in German. One paragraph. ")
+        );
+        assert_eq!(
+            config.ai.resolved_prompt_instructions(),
+            Some("Summarize in German. One paragraph.")
+        );
+
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn prompt_instructions_empty_or_missing_returns_none() {
+        let temp = temp_dir("prompt-instructions-empty");
+        let missing = temp.join("config.toml");
+
+        let config = AppConfig::load(&missing).unwrap();
+        assert_eq!(config.ai.resolved_prompt_instructions(), None);
+
+        let with_empty = temp.join("with_empty.toml");
+        fs::write(&with_empty, "[ai]\nprompt_instructions = \"\"\n").unwrap();
+        let config = AppConfig::load(&with_empty).unwrap();
+        assert_eq!(config.ai.resolved_prompt_instructions(), None);
+
+        let with_whitespace = temp.join("with_ws.toml");
+        fs::write(&with_whitespace, r#"[ai]
+prompt_instructions = "  \n\t "
+"#)
+            .unwrap();
+        let config = AppConfig::load(&with_whitespace).unwrap();
+        assert_eq!(config.ai.resolved_prompt_instructions(), None);
 
         fs::remove_dir_all(temp).unwrap();
     }
