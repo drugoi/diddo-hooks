@@ -19,7 +19,7 @@ pub struct SummaryData {
     pub most_active_count: usize,
 }
 
-/// Global stats for the summary footer (all commits across profiles).
+/// Global stats for the summary footer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GlobalStats {
     pub total_commits: usize,
@@ -94,7 +94,7 @@ pub fn render_json(data: &SummaryData) -> String {
     .unwrap_or_else(|_| "{}".to_string())
 }
 
-/// Renders summary by profile sections (terminal format).
+/// Renders summary by profile sections.
 pub fn render_terminal_to_string_by_profile(
     sections: &[ProfileGroup],
     date_label: &str,
@@ -105,7 +105,7 @@ pub fn render_terminal_to_string_by_profile(
     String::from_utf8(output).unwrap_or_default()
 }
 
-/// Renders summary by profile sections (markdown format).
+/// Renders summary by profile sections.
 pub fn render_markdown_by_profile(
     sections: &[ProfileGroup],
     date_label: &str,
@@ -136,7 +136,7 @@ pub fn render_markdown_by_profile(
     output
 }
 
-/// Renders summary by profile sections (JSON format).
+/// Renders summary by profile sections.
 pub fn render_json_by_profile(
     sections: &[ProfileGroup],
     date_label: &str,

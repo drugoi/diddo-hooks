@@ -160,7 +160,7 @@ impl Database {
         Ok(())
     }
 
-    /// Returns column names of the commits table (for tests).
+    /// Column names of the commits table.
     pub fn commit_table_column_names(&self) -> Result<Vec<String>> {
         let mut stmt = self.connection.prepare("PRAGMA table_info(commits)")?;
         let names = stmt

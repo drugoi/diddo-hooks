@@ -1039,7 +1039,7 @@ mod tests {
         );
 
         assert_eq!(terminal, "No commits recorded for 2026-03-10 (today).");
-        assert!(!terminal.contains("Profile:"), "empty period must not render profile sections");
+        assert!(!terminal.contains("Profile:"));
         assert_eq!(
             markdown,
             "# 2026-03-10 (today)\n\nNo commits recorded for 2026-03-10 (today).\n"
@@ -1081,7 +1081,7 @@ mod tests {
         )
         .unwrap();
 
-        assert!(rendered.output.contains("Profile: unknown"), "output should contain 'Profile: unknown' when all author_email are None");
+        assert!(rendered.output.contains("Profile: unknown"));
         assert!(rendered.output.contains("Summary for unknown profile."));
     }
 
@@ -1175,7 +1175,7 @@ mod tests {
         }
     }
 
-    /// Fails the first summarize call, succeeds on the second (for testing partial AI failure).
+    /// Fails first summarize call, succeeds on the second.
     struct FailFirstProvider {
         call_count: Cell<usize>,
         success_message: String,

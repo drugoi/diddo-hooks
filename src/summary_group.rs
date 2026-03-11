@@ -16,7 +16,7 @@ pub struct RepoGroup {
 pub struct ProfileGroup {
     pub profile_label: String,
     pub repos: Vec<RepoGroup>,
-    /// AI-generated summary for this profile (set after summarization).
+    /// AI summary for this profile.
     pub ai_summary: Option<String>,
 }
 
@@ -37,7 +37,6 @@ fn profile_key(commit: &Commit) -> String {
 /// Groups commits by (profile_key, repo_path), then builds ProfileGroups with repos
 /// sorted by repo_name and commits by committed_at then hash.
 pub fn group_commits_by_profile_then_repo(commits: &[Commit]) -> Vec<ProfileGroup> {
-    // (profile_key, repo_path) -> (repo_name, commits)
     let mut by_profile_repo: BTreeMap<String, BTreeMap<String, (String, Vec<Commit>)>> =
         BTreeMap::new();
 
