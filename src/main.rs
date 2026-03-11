@@ -5,6 +5,7 @@ mod hook;
 mod init;
 mod paths;
 mod render;
+mod summary_group;
 
 use clap::{ArgGroup, Args, Parser, Subcommand};
 use chrono::{Datelike, Duration, Local, NaiveDate};
@@ -289,13 +290,21 @@ fn should_try_ai_summary(summary_args: SummaryArgs) -> bool {
     !summary_args.raw
 }
 
-fn compute_cache_key(provider_id: &str, model_id: &str, period: &str, prompt: &str) -> String {
+fn compute_cache_key(
+    provider_id: &str,
+    model_id: &str,
+    period: &str,
+    profile: &str,
+    prompt: &str,
+) -> String {
     let mut hasher = Sha256::new();
     hasher.update(provider_id.as_bytes());
     hasher.update(b"\0");
     hasher.update(model_id.as_bytes());
     hasher.update(b"\0");
     hasher.update(period.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(profile.as_bytes());
     hasher.update(b"\0");
     hasher.update(prompt.as_bytes());
     format!("{:x}", hasher.finalize())
@@ -311,6 +320,7 @@ fn output_format(summary_args: SummaryArgs) -> OutputFormat {
     }
 }
 
+#[cfg(test)]
 fn try_ai_summary<F>(
     ai_config: &config::AiConfig,
     commits: &[db::Commit],
@@ -373,78 +383,206 @@ where
         });
     }
 
-    let ai_attempt = if should_try_ai_summary(summary_args) {
+    let mut groups = summary_group::group_commits_by_profile_then_repo(&commits);
+    let period = window.ai_period;
+
+    let (_, warning) = if should_try_ai_summary(summary_args) {
         let config = load_config()?;
-        let period = window.ai_period;
-        let prompt = ai::build_prompt(
-            &commits,
-            period,
-            config.ai.resolved_prompt_instructions(),
-        );
-        let cache_key_opt = ai::primary_provider_identity(&config.ai)
-            .ok()
-            .map(|(provider_id, model_id)| {
-                compute_cache_key(&provider_id, &model_id, period, &prompt)
-            });
-        let cached = match (cache_key_opt.as_deref(), summary_args.no_cache) {
-            (Some(key), false) => database.get_cached_summary(key).ok().flatten(),
-            _ => None,
+        let instructions = config.ai.resolved_prompt_instructions();
+        let provider_identity = ai::primary_provider_identity(&config.ai).ok();
+        let provider = match create_provider(&config.ai) {
+            Ok(p) => p,
+            Err(error) => {
+                let global_stats = build_global_stats(&commits);
+                let output = match output_format(summary_args) {
+                    OutputFormat::Terminal => {
+                        render::render_terminal_to_string_by_profile(
+                            &groups,
+                            &window.date_label,
+                            &global_stats,
+                        )
+                    }
+                    OutputFormat::Markdown => {
+                        render::render_markdown_by_profile(
+                            &groups,
+                            &window.date_label,
+                            &global_stats,
+                        )
+                    }
+                    OutputFormat::Json => render::render_json_by_profile(
+                        &groups,
+                        &window.date_label,
+                        &global_stats,
+                    ),
+                };
+                return Ok(RenderedSummary {
+                    output,
+                    warning: Some(format!(
+                        "AI summary unavailable: {error}. Falling back to raw output."
+                    )),
+                });
+            }
         };
-        if let Some(cached_summary) = cached {
-            AiSummaryAttempt {
-                summary: Some(cached_summary),
-                warning: None,
-            }
-        } else {
-            let show_indicator = std::io::stderr().is_terminal();
-            if show_indicator {
-                let pb = ProgressBar::new_spinner();
-                pb.set_style(
-                    ProgressStyle::default_spinner()
-                        .template("{spinner} {msg}")
-                        .unwrap(),
-                );
-                pb.set_message("Generating AI summary...");
-                pb.enable_steady_tick(StdDuration::from_millis(80));
-                let attempt =
-                    try_ai_summary(&config.ai, &commits, period, true, create_provider);
-                pb.finish_and_clear();
-                if let (Some(ref key), Some(ref summary)) =
-                    (cache_key_opt.as_ref(), attempt.summary.as_ref())
-                {
-                    let _ = database.set_cached_summary(key, summary);
-                }
-                attempt
+        let show_indicator = std::io::stderr().is_terminal();
+        let mut warnings = Vec::new();
+
+        for profile_group in groups.iter_mut() {
+            let profile_commits: Vec<db::Commit> = profile_group
+                .repos
+                .iter()
+                .flat_map(|r| r.commits.iter().cloned())
+                .collect();
+            let prompt = ai::build_prompt(&profile_commits, period, instructions);
+            let cache_key_opt = provider_identity.as_ref().map(|(provider_id, model_id)| {
+                compute_cache_key(
+                    provider_id,
+                    model_id,
+                    period,
+                    &profile_group.profile_label,
+                    &prompt,
+                )
+            });
+            let cached = match (cache_key_opt.as_deref(), summary_args.no_cache) {
+                (Some(key), false) => database.get_cached_summary(key).ok().flatten(),
+                _ => None,
+            };
+            let summary = if let Some(cached_summary) = cached {
+                Some(cached_summary)
             } else {
-                eprintln!("Generating AI summary...");
-                let attempt =
-                    try_ai_summary(&config.ai, &commits, period, true, create_provider);
-                if let (Some(ref key), Some(ref summary)) =
-                    (cache_key_opt.as_ref(), attempt.summary.as_ref())
-                {
-                    let _ = database.set_cached_summary(key, summary);
+                if show_indicator {
+                    let pb = ProgressBar::new_spinner();
+                    pb.set_style(
+                        ProgressStyle::default_spinner()
+                            .template("{spinner} {msg}")
+                            .unwrap(),
+                    );
+                    pb.set_message("Generating AI summary...");
+                    pb.enable_steady_tick(StdDuration::from_millis(80));
+                    let attempt = match provider.summarize(&profile_commits, period) {
+                        Ok(s) => AiSummaryAttempt {
+                            summary: Some(s),
+                            warning: None,
+                        },
+                        Err(error) => AiSummaryAttempt {
+                            summary: None,
+                            warning: Some(format!(
+                                "AI summary failed: {error}. Falling back to raw output."
+                            )),
+                        },
+                    };
+                    pb.finish_and_clear();
+                    if let Some(ref w) = attempt.warning {
+                        warnings.push(w.clone());
+                    }
+                    if let (Some(ref key), Some(ref s)) =
+                        (cache_key_opt.as_ref(), attempt.summary.as_ref())
+                    {
+                        let _ = database.set_cached_summary(key, s);
+                    }
+                    attempt.summary
+                } else {
+                    eprintln!("Generating AI summary...");
+                    let attempt = match provider.summarize(&profile_commits, period) {
+                        Ok(s) => AiSummaryAttempt {
+                            summary: Some(s),
+                            warning: None,
+                        },
+                        Err(error) => AiSummaryAttempt {
+                            summary: None,
+                            warning: Some(format!(
+                                "AI summary failed: {error}. Falling back to raw output."
+                            )),
+                        },
+                    };
+                    if let Some(ref w) = attempt.warning {
+                        warnings.push(w.clone());
+                    }
+                    if let (Some(ref key), Some(ref s)) =
+                        (cache_key_opt.as_ref(), attempt.summary.as_ref())
+                    {
+                        let _ = database.set_cached_summary(key, s);
+                    }
+                    attempt.summary
                 }
-                attempt
+            };
+            if let Some(s) = summary {
+                profile_group.ai_summary = Some(s);
+            } else {
+                profile_group.ai_summary = None;
             }
         }
+
+        let combined = groups
+            .iter()
+            .filter_map(|g| g.ai_summary.as_ref().map(String::as_str))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        let combined_summary = if combined.is_empty() {
+            None
+        } else {
+            Some(combined)
+        };
+        let warning = if warnings.is_empty() {
+            None
+        } else {
+            Some(warnings.join("; "))
+        };
+        (combined_summary, warning)
     } else {
-        AiSummaryAttempt {
-            summary: None,
-            warning: None,
-        }
+        (None, None)
     };
 
-    let summary = build_summary_data(window.date_label, ai_attempt.summary, commits);
+    let global_stats = build_global_stats(&commits);
     let output = match output_format(summary_args) {
-        OutputFormat::Terminal => render::render_terminal_to_string(&summary),
-        OutputFormat::Markdown => render::render_markdown(&summary),
-        OutputFormat::Json => render::render_json(&summary),
+        OutputFormat::Terminal => render::render_terminal_to_string_by_profile(
+            &groups,
+            &window.date_label,
+            &global_stats,
+        ),
+        OutputFormat::Markdown => {
+            render::render_markdown_by_profile(&groups, &window.date_label, &global_stats)
+        }
+        OutputFormat::Json => {
+            render::render_json_by_profile(&groups, &window.date_label, &global_stats)
+        }
     };
 
     Ok(RenderedSummary {
         output,
-        warning: ai_attempt.warning,
+        warning,
     })
+}
+
+fn build_global_stats(commits: &[db::Commit]) -> render::GlobalStats {
+    let mut project_counts = BTreeMap::<(String, String), usize>::new();
+    for commit in commits {
+        *project_counts
+            .entry((commit.repo_name.clone(), commit.repo_path.clone()))
+            .or_default() += 1;
+    }
+    let mut ranked_projects = project_counts
+        .into_iter()
+        .map(|((repo_name, _repo_path), count)| (repo_name, count))
+        .collect::<Vec<_>>();
+    ranked_projects.sort_by(|left, right| (Reverse(left.1), left.0.as_str()).cmp(&(Reverse(right.1), right.0.as_str())));
+
+    let first_commit = commits.iter().min_by_key(|c| c.committed_at);
+    let last_commit = commits.iter().max_by_key(|c| c.committed_at);
+    let most_active = ranked_projects.first();
+
+    render::GlobalStats {
+        total_commits: commits.len(),
+        first_commit_time: first_commit
+            .map(|c| format_commit_time(c.committed_at))
+            .unwrap_or_else(|| "-".to_string()),
+        last_commit_time: last_commit
+            .map(|c| format_commit_time(c.committed_at))
+            .unwrap_or_else(|| "-".to_string()),
+        most_active_project: most_active
+            .map(|(name, _)| name.clone())
+            .unwrap_or_else(|| "-".to_string()),
+        most_active_count: most_active.map(|(_, count)| *count).unwrap_or(0),
+    }
 }
 
 fn build_summary_data(
@@ -518,6 +656,7 @@ fn render_empty_summary(date_label: &str, summary_args: SummaryArgs) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
     use std::path::PathBuf;
 
     use chrono::{NaiveDate, TimeZone, Utc};
@@ -537,18 +676,20 @@ mod tests {
     #[test]
     fn cache_key_is_deterministic_and_different_for_different_inputs() {
         let prompt = "Period: today\n\n1. [repo] fix: bug (abc) on main at 2026-03-10T12:00:00Z\n";
-        let key1 = compute_cache_key("openai", "gpt-4o-mini", "today", prompt);
-        let key2 = compute_cache_key("openai", "gpt-4o-mini", "today", prompt);
+        let key1 = compute_cache_key("openai", "gpt-4o-mini", "today", "unknown", prompt);
+        let key2 = compute_cache_key("openai", "gpt-4o-mini", "today", "unknown", prompt);
         assert_eq!(key1, key2);
 
-        let key3 = compute_cache_key("anthropic", "gpt-4o-mini", "today", prompt);
+        let key3 = compute_cache_key("anthropic", "gpt-4o-mini", "today", "unknown", prompt);
         assert_ne!(key1, key3);
-        let key4 = compute_cache_key("openai", "other-model", "today", prompt);
+        let key4 = compute_cache_key("openai", "other-model", "today", "unknown", prompt);
         assert_ne!(key1, key4);
-        let key5 = compute_cache_key("openai", "gpt-4o-mini", "yesterday", prompt);
+        let key5 = compute_cache_key("openai", "gpt-4o-mini", "yesterday", "unknown", prompt);
         assert_ne!(key1, key5);
-        let key6 = compute_cache_key("openai", "gpt-4o-mini", "today", "different prompt");
+        let key6 = compute_cache_key("openai", "gpt-4o-mini", "today", "unknown", "different prompt");
         assert_ne!(key1, key6);
+        let key7 = compute_cache_key("openai", "gpt-4o-mini", "today", "test@example.com", prompt);
+        assert_ne!(key1, key7);
     }
 
     #[test]
@@ -576,7 +717,7 @@ mod tests {
             config.ai.resolved_prompt_instructions(),
         );
         let (provider_id, model_id) = crate::ai::primary_provider_identity(&config.ai).unwrap();
-        let key = compute_cache_key(&provider_id, &model_id, period, &prompt);
+        let key = compute_cache_key(&provider_id, &model_id, period, "unknown", &prompt);
         database.set_cached_summary(&key, "Pre-cached summary").unwrap();
 
         let window = resolve_summary_window(
@@ -899,6 +1040,7 @@ mod tests {
         );
 
         assert_eq!(terminal, "No commits recorded for 2026-03-10 (today).");
+        assert!(!terminal.contains("Profile:"));
         assert_eq!(
             markdown,
             "# 2026-03-10 (today)\n\nNo commits recorded for 2026-03-10 (today).\n"
@@ -912,6 +1054,36 @@ mod tests {
         assert!(json.contains("\"most_active_project\": \"-\""));
         assert!(json.contains("\"most_active_count\": 0"));
         assert!(!json.contains("\"message\""));
+    }
+
+    #[test]
+    fn single_profile_unknown_when_all_commits_have_no_author_email() {
+        let commits = vec![
+            sample_commit("abc1", "repo-a", "/tmp/repo-a", 9, 15),
+            sample_commit("def2", "repo-a", "/tmp/repo-a", 10, 30),
+        ];
+        let window = resolve_summary_window(
+            SummaryPeriod::Today,
+            NaiveDate::from_ymd_opt(2026, 3, 10).unwrap(),
+        );
+        let database = crate::db::Database::open_in_memory().unwrap();
+        let rendered = render_summary_output(
+            &database,
+            SummaryArgs {
+                md: false,
+                raw: false,
+                json: false,
+                no_cache: false,
+            },
+            window,
+            commits,
+            || Ok(AppConfig::default()),
+            |_| Ok(Box::new(SuccessProvider("Summary for unknown profile.".to_string()))),
+        )
+        .unwrap();
+
+        assert!(rendered.output.contains("Profile: unknown"));
+        assert!(rendered.output.contains("Summary for unknown profile."));
     }
 
     #[test]
@@ -976,6 +1148,7 @@ mod tests {
             insertions: 12,
             deletions: 4,
             committed_at: Utc.with_ymd_and_hms(2026, 3, 10, hour, minute, 0).unwrap(),
+            author_email: None,
         }
     }
 
@@ -1001,5 +1174,82 @@ mod tests {
         ) -> crate::ai::Result<String> {
             Err(AiError::new(self.0.clone()))
         }
+    }
+
+    /// Fails first summarize call, succeeds on the second.
+    struct FailFirstProvider {
+        call_count: Cell<usize>,
+        success_message: String,
+        failure_message: String,
+    }
+
+    impl FailFirstProvider {
+        fn new(success_message: &str, failure_message: &str) -> Self {
+            Self {
+                call_count: Cell::new(0),
+                success_message: success_message.to_string(),
+                failure_message: failure_message.to_string(),
+            }
+        }
+    }
+
+    impl AiProvider for FailFirstProvider {
+        fn summarize(
+            &self,
+            _commits: &[crate::db::Commit],
+            _period: &str,
+        ) -> crate::ai::Result<String> {
+            let n = self.call_count.get();
+            self.call_count.set(n + 1);
+            if n == 0 {
+                Err(AiError::new(self.failure_message.clone()))
+            } else {
+                Ok(self.success_message.clone())
+            }
+        }
+    }
+
+    fn commit_with_author(hash: &str, repo_name: &str, repo_path: &str, hour: u32, minute: u32, author_email: Option<&str>) -> crate::db::Commit {
+        let mut c = sample_commit(hash, repo_name, repo_path, hour, minute);
+        c.author_email = author_email.map(String::from);
+        c
+    }
+
+    #[test]
+    fn ai_failure_for_one_profile_shows_raw_for_that_profile_and_warning() {
+        let commits = vec![
+            commit_with_author("a1", "repo-a", "/tmp/repo-a", 9, 15, Some("alice@x.com")),
+            commit_with_author("b1", "repo-b", "/tmp/repo-b", 10, 0, Some("bob@y.com")),
+        ];
+        let window = resolve_summary_window(
+            SummaryPeriod::Today,
+            NaiveDate::from_ymd_opt(2026, 3, 10).unwrap(),
+        );
+        let database = crate::db::Database::open_in_memory().unwrap();
+        let provider = FailFirstProvider::new(
+            "Bob summary.",
+            "AI failed for first profile",
+        );
+        let rendered = render_summary_output(
+            &database,
+            SummaryArgs {
+                md: false,
+                raw: false,
+                json: false,
+                no_cache: false,
+            },
+            window,
+            commits,
+            || Ok(AppConfig::default()),
+            |_| Ok(Box::new(provider)),
+        )
+        .unwrap();
+
+        assert!(rendered.output.contains("Profile: alice@x.com"));
+        assert!(rendered.output.contains("Profile: bob@y.com"));
+        assert!(rendered.output.contains("repo-a (1 commit)"));
+        assert!(rendered.output.contains("a1  feat: update repo-a"));
+        assert!(rendered.output.contains("Bob summary."));
+        assert!(rendered.warning.as_deref().unwrap().contains("AI failed for first profile"));
     }
 }

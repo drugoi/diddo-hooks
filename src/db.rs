@@ -16,6 +16,7 @@ pub struct Commit {
     pub insertions: i64,
     pub deletions: i64,
     pub committed_at: DateTime<Utc>,
+    pub author_email: Option<String>,
 }
 
 #[allow(dead_code)]
@@ -30,7 +31,8 @@ const SCHEMA: &str = "
         files_changed INTEGER NOT NULL DEFAULT 0,
         insertions INTEGER NOT NULL DEFAULT 0,
         deletions INTEGER NOT NULL DEFAULT 0,
-        committed_at TEXT NOT NULL
+        committed_at TEXT NOT NULL,
+        author_email TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_commits_date_repo
         ON commits (committed_at, repo_name);
@@ -71,6 +73,7 @@ impl Database {
 
     fn initialize(connection: Connection) -> Result<Self> {
         connection.execute_batch(SCHEMA)?;
+        run_author_email_migration(&connection)?;
 
         Ok(Self { connection })
     }
@@ -86,8 +89,9 @@ impl Database {
                 files_changed,
                 insertions,
                 deletions,
-                committed_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                committed_at,
+                author_email
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
             ON CONFLICT(repo_path, hash) DO UPDATE SET
                 message = excluded.message,
                 repo_name = excluded.repo_name,
@@ -95,7 +99,8 @@ impl Database {
                 files_changed = excluded.files_changed,
                 insertions = excluded.insertions,
                 deletions = excluded.deletions,
-                committed_at = excluded.committed_at",
+                committed_at = excluded.committed_at,
+                author_email = excluded.author_email",
             params![
                 &commit.hash,
                 &commit.message,
@@ -106,6 +111,7 @@ impl Database {
                 commit.insertions,
                 commit.deletions,
                 commit.committed_at.to_rfc3339(),
+                &commit.author_email,
             ],
         )?;
 
@@ -124,7 +130,7 @@ impl Database {
 
     fn query_date_range_raw(&self, start: &str, end: &str) -> Result<Vec<Commit>> {
         let mut statement = self.connection.prepare(
-            "SELECT id, hash, message, repo_path, repo_name, branch, files_changed, insertions, deletions, committed_at
+            "SELECT id, hash, message, repo_path, repo_name, branch, files_changed, insertions, deletions, committed_at, author_email
              FROM commits
              WHERE committed_at >= ?1 AND committed_at < ?2
              ORDER BY repo_name, committed_at",
@@ -153,10 +159,34 @@ impl Database {
         )?;
         Ok(())
     }
+
+    /// Column names of the commits table.
+    pub fn commit_table_column_names(&self) -> Result<Vec<String>> {
+        let mut stmt = self.connection.prepare("PRAGMA table_info(commits)")?;
+        let names = stmt
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<Result<Vec<_>>>()?;
+        Ok(names)
+    }
 }
 
 fn date_range_bounds_local(from: NaiveDate, to: NaiveDate) -> Result<(String, String)> {
     date_range_bounds_in_timezone(from, to, &Local)
+}
+
+fn author_email_column_exists(conn: &Connection) -> Result<bool> {
+    let mut stmt = conn.prepare("PRAGMA table_info(commits)")?;
+    let names: Vec<String> = stmt
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(names.iter().any(|s| s == "author_email"))
+}
+
+fn run_author_email_migration(conn: &Connection) -> Result<()> {
+    if !author_email_column_exists(conn)? {
+        conn.execute("ALTER TABLE commits ADD COLUMN author_email TEXT", [])?;
+    }
+    Ok(())
 }
 
 fn date_range_bounds_in_timezone<Tz: TimeZone>(
@@ -212,6 +242,7 @@ fn commit_from_row(row: &Row<'_>) -> Result<Commit> {
         insertions: row.get(7)?,
         deletions: row.get(8)?,
         committed_at,
+        author_email: row.get(10)?,
     })
 }
 
@@ -253,7 +284,8 @@ mod tests {
                     files_changed INTEGER NOT NULL DEFAULT 0,
                     insertions INTEGER NOT NULL DEFAULT 0,
                     deletions INTEGER NOT NULL DEFAULT 0,
-                    committed_at TEXT NOT NULL
+                    committed_at TEXT NOT NULL,
+                    author_email TEXT
                 )"
             )
         );
@@ -308,6 +340,7 @@ mod tests {
                     None,
                     false,
                 ),
+                ("author_email".to_string(), "TEXT".to_string(), false, None, false),
             ]
         );
     }
@@ -394,6 +427,60 @@ mod tests {
 
         assert_eq!(commits.len(), 1);
         assert_eq!(commits[0].hash, "dup1234");
+    }
+
+    #[test]
+    fn insert_commit_stores_author_email_and_query_returns_it() {
+        let database = Database::open_in_memory().unwrap();
+        let today = Local::now().date_naive();
+        let committed_at = local_datetime_to_utc(today, 12, 0);
+        let mut commit = build_commit("abc1234", "test", committed_at);
+        commit.author_email = Some("me@example.com".to_string());
+        commit.files_changed = 0;
+        commit.insertions = 0;
+        commit.deletions = 0;
+
+        database.insert_commit(&commit).unwrap();
+
+        let commits = database.query_date(today).unwrap();
+
+        assert_eq!(commits.len(), 1);
+        assert_eq!(
+            commits[0].author_email,
+            Some("me@example.com".to_string())
+        );
+    }
+
+    #[test]
+    fn migration_adds_author_email_column_when_missing() {
+        const OLD_SCHEMA: &str = "
+            CREATE TABLE commits (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                hash TEXT NOT NULL,
+                message TEXT NOT NULL,
+                repo_path TEXT NOT NULL,
+                repo_name TEXT NOT NULL,
+                branch TEXT NOT NULL,
+                files_changed INTEGER NOT NULL DEFAULT 0,
+                insertions INTEGER NOT NULL DEFAULT 0,
+                deletions INTEGER NOT NULL DEFAULT 0,
+                committed_at TEXT NOT NULL
+            );
+        ";
+        let path = unique_temp_path("diddo-db-migration").join("diddo.sqlite3");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(OLD_SCHEMA).unwrap();
+        }
+        let database = Database::open(&path).unwrap();
+        let columns = database.commit_table_column_names().unwrap();
+        assert!(
+            columns.contains(&"author_email".to_string()),
+            "expected author_email column, got: {:?}",
+            columns
+        );
+        fs::remove_dir_all(path.parent().unwrap()).ok();
     }
 
     #[test]
@@ -529,6 +616,7 @@ mod tests {
             insertions: 25,
             deletions: 10,
             committed_at,
+            author_email: None,
         }
     }
 
