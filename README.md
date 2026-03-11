@@ -38,6 +38,11 @@ To pin a version:
 $env:DIDDO_VERSION = "0.1.0"; irm https://raw.githubusercontent.com/drugoi/diddo-hooks/main/install.ps1 | iex
 ```
 
+Install options (environment variables):
+
+- **DIDDO_VERSION** — Pin the install to a specific release (e.g. `0.1.0`).
+- **DIDDO_INSTALL_DIR** — Directory where the binary is installed. Defaults: `$HOME/.local/bin` (macOS/Linux), `%LOCALAPPDATA%\diddo` (Windows).
+
 Alternatively, download the `diddo-<version>-x86_64-pc-windows-msvc.zip` (or ARM64) from [Releases](https://github.com/drugoi/diddo-hooks/releases), extract `diddo.exe`, and add the folder to your PATH.
 
 ### From source (all platforms)
@@ -127,6 +132,9 @@ diddo week --raw
 diddo today --no-cache
 ```
 
+- **`--md`** — Output summary as markdown.
+- **`--json`** — Output summary as JSON.
+- **`--raw`** — Skip AI and show grouped raw commit data.
 - **`--no-cache`** — Skip the AI summary cache and force a fresh summary.
 
 Current CLI behavior:
@@ -185,6 +193,16 @@ The config file is optional. If it does not exist, `diddo` still works for raw s
 
 Run `diddo config` to get the exact config path on your machine.
 
+Options:
+
+| Key | Description |
+|-----|-------------|
+| `ai.provider` | API provider: `openai` or `anthropic` |
+| `ai.api_key` | API key (overrides environment variables) |
+| `ai.model` | Model for direct API; defaults: `gpt-4o-mini` (OpenAI), `claude-sonnet-4-6` (Anthropic) |
+| `ai.prompt_instructions` | Custom AI instructions (tone, language, length); period and commit list are always appended |
+| `ai.cli.prefer` | CLI/API preference: `api`, `cli`, `claude`, `codex`, `opencode`, or `cursor-agent` |
+
 Example:
 
 ```toml
@@ -219,7 +237,7 @@ export DIDDO_ANTHROPIC_KEY=your-anthropic-key
 Notes:
 
 - `ai.provider` accepts `openai` or `anthropic`
-- `ai.cli.prefer` accepts `api`, `cli`, `claude`, `codex`, `opencode`, or `cursor-agent`
+- `ai.cli.prefer` accepts `api`, `cli`, `claude`, `codex`, `opencode`, or `cursor-agent` (alias: `cursor_agent`)
 - `ai.model` applies to direct API providers only; CLI tools use their own default model selection
 - `ai.api_key` in the config file overrides environment variables
 - `ai.prompt_instructions` (optional): when set, replaces the default AI instructions (tone, language, length); period, commit count, and commit list are always appended. Use for a different language or more concise output. Empty or missing = default instructions.
