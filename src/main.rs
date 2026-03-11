@@ -233,8 +233,14 @@ fn format_file_size(bytes: u64) -> String {
 fn run_metadata_command() -> Result<(), Box<dyn Error>> {
     let paths = paths::AppPaths::new()?;
     let database = db::Database::open(&paths.db_path)?;
-
     let size_bytes = std::fs::metadata(&paths.db_path)?.len();
+
+    println!("{}", format_metadata(&database, size_bytes)?);
+
+    Ok(())
+}
+
+fn format_metadata(database: &db::Database, size_bytes: u64) -> Result<String, Box<dyn Error>> {
     let count = database.commit_count()?;
     let oldest = match database.oldest_commit_date()? {
         Some(raw) => chrono::DateTime::parse_from_rfc3339(&raw)
@@ -243,11 +249,10 @@ fn run_metadata_command() -> Result<(), Box<dyn Error>> {
         None => "-".to_string(),
     };
 
-    println!("Database size:   {}", format_file_size(size_bytes));
-    println!("Total commits:   {count}");
-    println!("Oldest commit:   {oldest}");
-
-    Ok(())
+    Ok(format!(
+        "Database size:   {}\nTotal commits:   {count}\nOldest commit:   {oldest}",
+        format_file_size(size_bytes)
+    ))
 }
 
 fn run_summary_command(cli: ParsedCli) -> Result<(), Box<dyn Error>> {
@@ -703,8 +708,9 @@ mod tests {
     use super::{
         AiSummaryAttempt, Commands, OutputFormat, ParsedCli, SummaryArgs, SummaryPeriod,
         build_summary_data, compute_cache_key, format_commit_time, format_config_paths,
-        format_file_size, output_format, parse_cli, render_empty_summary, render_summary_output,
-        resolve_summary_window, should_try_ai_summary, summary_request_from_cli, try_ai_summary,
+        format_file_size, format_metadata, output_format, parse_cli, render_empty_summary,
+        render_summary_output, resolve_summary_window, should_try_ai_summary,
+        summary_request_from_cli, try_ai_summary,
     };
     use crate::{
         ai::{AiError, AiProvider},
@@ -1191,6 +1197,27 @@ mod tests {
         }
     }
 
+    fn sample_commit_at(
+        hash: &str,
+        repo_name: &str,
+        repo_path: &str,
+        committed_at: chrono::DateTime<Utc>,
+    ) -> crate::db::Commit {
+        crate::db::Commit {
+            id: None,
+            hash: hash.to_string(),
+            message: format!("feat: update {repo_name}"),
+            repo_path: repo_path.to_string(),
+            repo_name: repo_name.to_string(),
+            branch: "main".to_string(),
+            files_changed: 3,
+            insertions: 12,
+            deletions: 4,
+            committed_at,
+            author_email: None,
+        }
+    }
+
     struct SuccessProvider(String);
 
     impl AiProvider for SuccessProvider {
@@ -1290,6 +1317,40 @@ mod tests {
         assert!(rendered.output.contains("a1  feat: update repo-a"));
         assert!(rendered.output.contains("Bob summary."));
         assert!(rendered.warning.as_deref().unwrap().contains("AI failed for first profile"));
+    }
+
+    #[test]
+    fn metadata_shows_size_count_and_oldest_for_empty_database() {
+        let database = crate::db::Database::open_in_memory().unwrap();
+
+        let output = format_metadata(&database, 0).unwrap();
+
+        assert!(output.contains("Database size:   0 bytes"));
+        assert!(output.contains("Total commits:   0"));
+        assert!(output.contains("Oldest commit:   -"));
+    }
+
+    #[test]
+    fn metadata_shows_correct_stats_after_inserting_commits() {
+        let database = crate::db::Database::open_in_memory().unwrap();
+
+        let earlier = Utc.with_ymd_and_hms(2026, 3, 8, 10, 0, 0).unwrap();
+        let later = Utc.with_ymd_and_hms(2026, 3, 10, 14, 0, 0).unwrap();
+
+        database
+            .insert_commit(&sample_commit_at("aaa1111", "repo-a", "/tmp/repo-a", earlier))
+            .unwrap();
+        database
+            .insert_commit(&sample_commit_at("bbb2222", "repo-b", "/tmp/repo-b", later))
+            .unwrap();
+
+        let output = format_metadata(&database, 50 * 1024 * 1024).unwrap();
+
+        assert!(output.contains("Database size:   50.00 MB"));
+        assert!(output.contains("Total commits:   2"));
+        // The oldest commit line should contain a formatted date, not "-"
+        assert!(!output.contains("Oldest commit:   -"));
+        assert!(output.contains("Oldest commit:   2026-03-08"));
     }
 
     #[test]
