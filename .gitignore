@@ -1,3 +1,4 @@
 .worktrees/
 /target
 .DS_Store
+/.cursor/hooks
