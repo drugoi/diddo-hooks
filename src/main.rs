@@ -506,6 +506,8 @@ where
             };
             if let Some(s) = summary {
                 profile_group.ai_summary = Some(s);
+            } else {
+                profile_group.ai_summary = None;
             }
         }
 
@@ -653,6 +655,7 @@ fn render_empty_summary(date_label: &str, summary_args: SummaryArgs) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
     use std::path::PathBuf;
 
     use chrono::{NaiveDate, TimeZone, Utc};
@@ -1036,6 +1039,7 @@ mod tests {
         );
 
         assert_eq!(terminal, "No commits recorded for 2026-03-10 (today).");
+        assert!(!terminal.contains("Profile:"), "empty period must not render profile sections");
         assert_eq!(
             markdown,
             "# 2026-03-10 (today)\n\nNo commits recorded for 2026-03-10 (today).\n"
@@ -1049,6 +1053,36 @@ mod tests {
         assert!(json.contains("\"most_active_project\": \"-\""));
         assert!(json.contains("\"most_active_count\": 0"));
         assert!(!json.contains("\"message\""));
+    }
+
+    #[test]
+    fn single_profile_unknown_when_all_commits_have_no_author_email() {
+        let commits = vec![
+            sample_commit("abc1", "repo-a", "/tmp/repo-a", 9, 15),
+            sample_commit("def2", "repo-a", "/tmp/repo-a", 10, 30),
+        ];
+        let window = resolve_summary_window(
+            SummaryPeriod::Today,
+            NaiveDate::from_ymd_opt(2026, 3, 10).unwrap(),
+        );
+        let database = crate::db::Database::open_in_memory().unwrap();
+        let rendered = render_summary_output(
+            &database,
+            SummaryArgs {
+                md: false,
+                raw: false,
+                json: false,
+                no_cache: false,
+            },
+            window,
+            commits,
+            || Ok(AppConfig::default()),
+            |_| Ok(Box::new(SuccessProvider("Summary for unknown profile.".to_string()))),
+        )
+        .unwrap();
+
+        assert!(rendered.output.contains("Profile: unknown"), "output should contain 'Profile: unknown' when all author_email are None");
+        assert!(rendered.output.contains("Summary for unknown profile."));
     }
 
     #[test]
@@ -1139,5 +1173,82 @@ mod tests {
         ) -> crate::ai::Result<String> {
             Err(AiError::new(self.0.clone()))
         }
+    }
+
+    /// Fails the first summarize call, succeeds on the second (for testing partial AI failure).
+    struct FailFirstProvider {
+        call_count: Cell<usize>,
+        success_message: String,
+        failure_message: String,
+    }
+
+    impl FailFirstProvider {
+        fn new(success_message: &str, failure_message: &str) -> Self {
+            Self {
+                call_count: Cell::new(0),
+                success_message: success_message.to_string(),
+                failure_message: failure_message.to_string(),
+            }
+        }
+    }
+
+    impl AiProvider for FailFirstProvider {
+        fn summarize(
+            &self,
+            _commits: &[crate::db::Commit],
+            _period: &str,
+        ) -> crate::ai::Result<String> {
+            let n = self.call_count.get();
+            self.call_count.set(n + 1);
+            if n == 0 {
+                Err(AiError::new(self.failure_message.clone()))
+            } else {
+                Ok(self.success_message.clone())
+            }
+        }
+    }
+
+    fn commit_with_author(hash: &str, repo_name: &str, repo_path: &str, hour: u32, minute: u32, author_email: Option<&str>) -> crate::db::Commit {
+        let mut c = sample_commit(hash, repo_name, repo_path, hour, minute);
+        c.author_email = author_email.map(String::from);
+        c
+    }
+
+    #[test]
+    fn ai_failure_for_one_profile_shows_raw_for_that_profile_and_warning() {
+        let commits = vec![
+            commit_with_author("a1", "repo-a", "/tmp/repo-a", 9, 15, Some("alice@x.com")),
+            commit_with_author("b1", "repo-b", "/tmp/repo-b", 10, 0, Some("bob@y.com")),
+        ];
+        let window = resolve_summary_window(
+            SummaryPeriod::Today,
+            NaiveDate::from_ymd_opt(2026, 3, 10).unwrap(),
+        );
+        let database = crate::db::Database::open_in_memory().unwrap();
+        let provider = FailFirstProvider::new(
+            "Bob summary.",
+            "AI failed for first profile",
+        );
+        let rendered = render_summary_output(
+            &database,
+            SummaryArgs {
+                md: false,
+                raw: false,
+                json: false,
+                no_cache: false,
+            },
+            window,
+            commits,
+            || Ok(AppConfig::default()),
+            |_| Ok(Box::new(provider)),
+        )
+        .unwrap();
+
+        assert!(rendered.output.contains("Profile: alice@x.com"));
+        assert!(rendered.output.contains("Profile: bob@y.com"));
+        assert!(rendered.output.contains("repo-a (1 commit)"), "failed profile should show raw commits");
+        assert!(rendered.output.contains("a1  feat: update repo-a"));
+        assert!(rendered.output.contains("Bob summary."), "successful profile should show AI summary");
+        assert!(rendered.warning.as_deref().unwrap().contains("AI failed for first profile"), "combined warning should mention failure");
     }
 }
