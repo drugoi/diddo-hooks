@@ -176,10 +176,10 @@ fn date_range_bounds_local(from: NaiveDate, to: NaiveDate) -> Result<(String, St
 
 fn author_email_column_exists(conn: &Connection) -> Result<bool> {
     let mut stmt = conn.prepare("PRAGMA table_info(commits)")?;
-    let found = stmt
+    let names: Vec<String> = stmt
         .query_map([], |row| row.get::<_, String>(1))?
-        .any(|res| res.map(|s| s == "author_email").unwrap_or(false));
-    Ok(found)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(names.iter().any(|s| s == "author_email"))
 }
 
 fn run_author_email_migration(conn: &Connection) -> Result<()> {
