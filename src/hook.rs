@@ -39,6 +39,11 @@ where
         .and_then(|output| parse_diff_stats(&output))
         .unwrap_or((0, 0, 0));
 
+    let author_email = run_git(&["config", "user.email"])
+        .ok()
+        .map(trim_git_output)
+        .filter(|s| !s.is_empty());
+
     Ok(Commit {
         id: None,
         hash,
@@ -50,7 +55,7 @@ where
         insertions,
         deletions,
         committed_at,
-        author_email: None,
+        author_email,
     })
 }
 
@@ -156,6 +161,7 @@ mod tests {
                     Ok("/Users/example/projects/diddo\n".to_string())
                 }
                 ["rev-parse", "--abbrev-ref", "HEAD"] => Ok("feature/diddo\n".to_string()),
+                ["config", "user.email"] => Ok("work@company.com\n".to_string()),
                 _ => Err(io::Error::other("unexpected git arguments")),
             },
             || Ok(" 2 files changed, 10 insertions(+), 3 deletions(-)\n".to_string()),
@@ -176,6 +182,29 @@ mod tests {
         assert_eq!(commits[0].insertions, 10);
         assert_eq!(commits[0].deletions, 3);
         assert_eq!(commits[0].committed_at, committed_at);
+        assert_eq!(
+            commits[0].author_email,
+            Some("work@company.com".to_string())
+        );
+    }
+
+    #[test]
+    fn author_email_is_none_when_config_fails() {
+        let mut run_git = |args: &[&str]| match args {
+            ["rev-parse", "--short", "HEAD"] => Ok("abc1234\n".to_string()),
+            ["log", "-1", "--format=%B"] => Ok("feat: add hook storage\n".to_string()),
+            ["log", "-1", "--format=%cI"] => Ok("2026-03-10T12:00:00+00:00\n".to_string()),
+            ["rev-parse", "--show-toplevel"] => Ok("/Users/example/projects/diddo\n".to_string()),
+            ["rev-parse", "--abbrev-ref", "HEAD"] => Ok("feature/diddo\n".to_string()),
+            ["config", "user.email"] => Err(io::Error::other("no config")),
+            _ => Err(io::Error::other("unexpected git arguments")),
+        };
+        let mut read_diff_stats =
+            || Ok(" 2 files changed, 10 insertions(+), 3 deletions(-)\n".to_string());
+
+        let commit = build_commit(&mut run_git, &mut read_diff_stats).unwrap();
+
+        assert_eq!(commit.author_email, None);
     }
 
     #[test]
@@ -186,6 +215,7 @@ mod tests {
             ["log", "-1", "--format=%cI"] => Ok("2026-03-10T12:00:00+00:00\n".to_string()),
             ["rev-parse", "--show-toplevel"] => Ok("/Users/example/projects/diddo\n".to_string()),
             ["rev-parse", "--abbrev-ref", "HEAD"] => Ok("feature/diddo\n".to_string()),
+            ["config", "user.email"] => Ok("work@company.com\n".to_string()),
             _ => Err(io::Error::other("unexpected git arguments")),
         };
         let mut read_diff_stats = || Err(io::Error::other("diff stats unavailable"));
@@ -211,6 +241,7 @@ mod tests {
             ["log", "-1", "--format=%cI"] => Ok("2026-03-09T23:45:00-05:00\n".to_string()),
             ["rev-parse", "--show-toplevel"] => Ok("/Users/example/projects/diddo\n".to_string()),
             ["rev-parse", "--abbrev-ref", "HEAD"] => Ok("feature/diddo\n".to_string()),
+            ["config", "user.email"] => Ok("dev@example.com\n".to_string()),
             _ => Err(io::Error::other("unexpected git arguments")),
         };
         let mut read_diff_stats =
