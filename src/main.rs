@@ -385,18 +385,34 @@ where
     let mut groups = summary_group::group_commits_by_profile_then_repo(&commits);
     let period = window.ai_period;
 
-    let (combined_summary, warning) = if should_try_ai_summary(summary_args) {
+    let (_, warning) = if should_try_ai_summary(summary_args) {
         let config = load_config()?;
         let instructions = config.ai.resolved_prompt_instructions();
         let provider_identity = ai::primary_provider_identity(&config.ai).ok();
         let provider = match create_provider(&config.ai) {
             Ok(p) => p,
             Err(error) => {
-                let summary = build_summary_data(window.date_label.clone(), None, commits.clone());
+                let global_stats = build_global_stats(&commits);
                 let output = match output_format(summary_args) {
-                    OutputFormat::Terminal => render::render_terminal_to_string(&summary),
-                    OutputFormat::Markdown => render::render_markdown(&summary),
-                    OutputFormat::Json => render::render_json(&summary),
+                    OutputFormat::Terminal => {
+                        render::render_terminal_to_string_by_profile(
+                            &groups,
+                            &window.date_label,
+                            &global_stats,
+                        )
+                    }
+                    OutputFormat::Markdown => {
+                        render::render_markdown_by_profile(
+                            &groups,
+                            &window.date_label,
+                            &global_stats,
+                        )
+                    }
+                    OutputFormat::Json => render::render_json_by_profile(
+                        &groups,
+                        &window.date_label,
+                        &global_stats,
+                    ),
                 };
                 return Ok(RenderedSummary {
                     output,
@@ -513,17 +529,57 @@ where
         (None, None)
     };
 
-    let summary = build_summary_data(window.date_label, combined_summary, commits);
+    let global_stats = build_global_stats(&commits);
     let output = match output_format(summary_args) {
-        OutputFormat::Terminal => render::render_terminal_to_string(&summary),
-        OutputFormat::Markdown => render::render_markdown(&summary),
-        OutputFormat::Json => render::render_json(&summary),
+        OutputFormat::Terminal => render::render_terminal_to_string_by_profile(
+            &groups,
+            &window.date_label,
+            &global_stats,
+        ),
+        OutputFormat::Markdown => {
+            render::render_markdown_by_profile(&groups, &window.date_label, &global_stats)
+        }
+        OutputFormat::Json => {
+            render::render_json_by_profile(&groups, &window.date_label, &global_stats)
+        }
     };
 
     Ok(RenderedSummary {
         output,
         warning,
     })
+}
+
+fn build_global_stats(commits: &[db::Commit]) -> render::GlobalStats {
+    let mut project_counts = BTreeMap::<(String, String), usize>::new();
+    for commit in commits {
+        *project_counts
+            .entry((commit.repo_name.clone(), commit.repo_path.clone()))
+            .or_default() += 1;
+    }
+    let mut ranked_projects = project_counts
+        .into_iter()
+        .map(|((repo_name, _repo_path), count)| (repo_name, count))
+        .collect::<Vec<_>>();
+    ranked_projects.sort_by(|left, right| (Reverse(left.1), left.0.as_str()).cmp(&(Reverse(right.1), right.0.as_str())));
+
+    let first_commit = commits.iter().min_by_key(|c| c.committed_at);
+    let last_commit = commits.iter().max_by_key(|c| c.committed_at);
+    let most_active = ranked_projects.first();
+
+    render::GlobalStats {
+        total_commits: commits.len(),
+        first_commit_time: first_commit
+            .map(|c| format_commit_time(c.committed_at))
+            .unwrap_or_else(|| "-".to_string()),
+        last_commit_time: last_commit
+            .map(|c| format_commit_time(c.committed_at))
+            .unwrap_or_else(|| "-".to_string()),
+        most_active_project: most_active
+            .map(|(name, _)| name.clone())
+            .unwrap_or_else(|| "-".to_string()),
+        most_active_count: most_active.map(|(_, count)| *count).unwrap_or(0),
+    }
 }
 
 fn build_summary_data(
