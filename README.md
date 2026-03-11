@@ -187,6 +187,27 @@ Default API models:
 - OpenAI: `gpt-4o-mini`
 - Anthropic: `claude-sonnet-4-6`
 
+### Default prompt
+
+When `ai.prompt_instructions` is not set (or empty), the CLI uses a built-in prompt. There is no config key for the default; it is fixed in the binary. The prompt sent to the AI is (with `{period}` and commit count/list filled in):
+
+```text
+You are summarizing git activity for {period}.
+Write a concise status update with the main themes, notable repos, and momentum.
+Use only the commit data below.
+
+Period: {period}
+Commit count: {n}
+
+Commits:
+1. [repo_name] message (hash) on branch at 2026-03-10T12:00:00Z; files: 3, +12, -4
+...
+
+Return plain text only. Keep it brief and useful, in 2 short paragraphs max.
+```
+
+`{period}` is e.g. today, yesterday, or this week; `{n}` is the commit count. The list is one line per commit in the format above.
+
 ## Config File
 
 The config file is optional. If it does not exist, `diddo` still works for raw summaries and for AI summaries when a supported CLI tool is already installed.
