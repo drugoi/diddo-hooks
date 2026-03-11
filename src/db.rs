@@ -128,6 +128,14 @@ impl Database {
         self.query_date_range_raw(&start, &end)
     }
 
+    pub fn query_datetime_range(
+        &self,
+        from: DateTime<Utc>,
+        to: DateTime<Utc>,
+    ) -> Result<Vec<Commit>> {
+        self.query_date_range_raw(&from.to_rfc3339(), &to.to_rfc3339())
+    }
+
     fn query_date_range_raw(&self, start: &str, end: &str) -> Result<Vec<Commit>> {
         let mut statement = self.connection.prepare(
             "SELECT id, hash, message, repo_path, repo_name, branch, files_changed, insertions, deletions, committed_at, author_email
@@ -599,6 +607,67 @@ mod tests {
 
         let oldest = database.oldest_commit_date().unwrap().unwrap();
         assert_eq!(oldest, earlier.to_rfc3339());
+    }
+
+    #[test]
+    fn query_datetime_range_returns_commits_within_exact_bounds() {
+        let database = Database::open_in_memory().unwrap();
+        let now = Utc::now();
+        let hours_ago_12 = now - Duration::hours(12);
+        let hours_ago_25 = now - Duration::hours(25);
+
+        let inside = build_commit("aaa1111", "inside range", hours_ago_12);
+        let outside = build_commit("bbb2222", "outside range", hours_ago_25);
+
+        database.insert_commit(&inside).unwrap();
+        database.insert_commit(&outside).unwrap();
+
+        let commits = database
+            .query_datetime_range(now - Duration::hours(24), now)
+            .unwrap();
+
+        assert_eq!(commits.len(), 1);
+        assert_eq!(commits[0].hash, "aaa1111");
+    }
+
+    #[test]
+    fn query_datetime_range_returns_empty_when_no_commits_in_range() {
+        let database = Database::open_in_memory().unwrap();
+        let now = Utc::now();
+        let hours_ago_48 = now - Duration::hours(48);
+
+        let commit = build_commit("aaa1111", "old commit", hours_ago_48);
+        database.insert_commit(&commit).unwrap();
+
+        let commits = database
+            .query_datetime_range(now - Duration::hours(24), now)
+            .unwrap();
+
+        assert!(commits.is_empty());
+    }
+
+    #[test]
+    fn query_datetime_range_returns_multiple_commits_sorted_by_repo_then_time() {
+        let database = Database::open_in_memory().unwrap();
+        let now = Utc::now();
+        let hours_ago_6 = now - Duration::hours(6);
+        let hours_ago_3 = now - Duration::hours(3);
+
+        let mut commit_a = build_commit("aaa1111", "earlier", hours_ago_6);
+        commit_a.repo_name = "z-repo".to_string();
+        let mut commit_b = build_commit("bbb2222", "later", hours_ago_3);
+        commit_b.repo_name = "a-repo".to_string();
+
+        database.insert_commit(&commit_a).unwrap();
+        database.insert_commit(&commit_b).unwrap();
+
+        let commits = database
+            .query_datetime_range(now - Duration::hours(24), now)
+            .unwrap();
+
+        assert_eq!(commits.len(), 2);
+        assert_eq!(commits[0].repo_name, "a-repo");
+        assert_eq!(commits[1].repo_name, "z-repo");
     }
 
     #[test]

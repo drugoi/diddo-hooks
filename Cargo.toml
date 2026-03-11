@@ -21,3 +21,4 @@ toml = "1.0.6"
 reqwest = { version = "0.13.2", default-features = false, features = ["blocking", "json", "rustls"] }
 sha2 = "0.10"
 indicatif = "0.17"
+crossterm = "0.28"

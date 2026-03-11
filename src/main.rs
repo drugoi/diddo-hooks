@@ -3,12 +3,13 @@ mod config;
 mod db;
 mod hook;
 mod init;
+mod interactive;
 mod paths;
 mod render;
 mod summary_group;
 
 use clap::{ArgGroup, Args, Parser, Subcommand};
-use chrono::{Datelike, Duration, Local, NaiveDate};
+use chrono::{DateTime, Datelike, Duration, Local, NaiveDate, Utc};
 use indicatif::{ProgressBar, ProgressStyle};
 use sha2::{Digest, Sha256};
 use std::{cmp::Reverse, collections::BTreeMap, error::Error, ffi::OsString, io::IsTerminal, time::Duration as StdDuration};
@@ -80,6 +81,8 @@ enum Commands {
     Yesterday(SummaryArgs),
     /// Show this week's summary.
     Week(SummaryArgs),
+    /// Show summary for the last 24 hours.
+    Standup(SummaryArgs),
     /// Install the global post-commit hook.
     Init,
     /// Remove the global hook and clean up.
@@ -103,6 +106,7 @@ enum SummaryPeriod {
     Today,
     Yesterday,
     Week,
+    Standup,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -118,6 +122,7 @@ struct SummaryWindow {
     to: NaiveDate,
     date_label: String,
     ai_period: &'static str,
+    exact_bounds: Option<(DateTime<Utc>, DateTime<Utc>)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -161,8 +166,28 @@ where
 }
 
 fn main() {
-    let cli = parse_cli(std::env::args_os()).unwrap_or_else(|error| error.exit());
+    let raw_args: Vec<OsString> = std::env::args_os().collect();
+    let is_bare_invocation = raw_args.len() == 1;
 
+    if is_bare_invocation && std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
+        let selected = match interactive::run() {
+            Ok(Some(command)) => command,
+            Ok(None) => return,
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+        };
+        let cli = parse_cli(["diddo", selected.as_str()]).unwrap_or_else(|error| error.exit());
+        run_cli(cli);
+        return;
+    }
+
+    let cli = parse_cli(raw_args).unwrap_or_else(|error| error.exit());
+    run_cli(cli);
+}
+
+fn run_cli(cli: ParsedCli) {
     let result = match cli.command {
         Some(Commands::Init) => run_init_command(),
         Some(Commands::Uninstall) => run_uninstall_command(),
@@ -233,8 +258,14 @@ fn format_file_size(bytes: u64) -> String {
 fn run_metadata_command() -> Result<(), Box<dyn Error>> {
     let paths = paths::AppPaths::new()?;
     let database = db::Database::open(&paths.db_path)?;
-
     let size_bytes = std::fs::metadata(&paths.db_path)?.len();
+
+    println!("{}", format_metadata(&database, size_bytes)?);
+
+    Ok(())
+}
+
+fn format_metadata(database: &db::Database, size_bytes: u64) -> Result<String, Box<dyn Error>> {
     let count = database.commit_count()?;
     let oldest = match database.oldest_commit_date()? {
         Some(raw) => chrono::DateTime::parse_from_rfc3339(&raw)
@@ -243,11 +274,10 @@ fn run_metadata_command() -> Result<(), Box<dyn Error>> {
         None => "-".to_string(),
     };
 
-    println!("Database size:   {}", format_file_size(size_bytes));
-    println!("Total commits:   {count}");
-    println!("Oldest commit:   {oldest}");
-
-    Ok(())
+    Ok(format!(
+        "Database size:   {}\nTotal commits:   {count}\nOldest commit:   {oldest}",
+        format_file_size(size_bytes)
+    ))
 }
 
 fn run_summary_command(cli: ParsedCli) -> Result<(), Box<dyn Error>> {
@@ -281,6 +311,7 @@ fn summary_request_from_cli(cli: ParsedCli) -> Option<(SummaryPeriod, SummaryArg
         Some(Commands::Today(summary)) => Some((SummaryPeriod::Today, summary)),
         Some(Commands::Yesterday(summary)) => Some((SummaryPeriod::Yesterday, summary)),
         Some(Commands::Week(summary)) => Some((SummaryPeriod::Week, summary)),
+        Some(Commands::Standup(summary)) => Some((SummaryPeriod::Standup, summary)),
         Some(Commands::Init | Commands::Uninstall | Commands::Hook | Commands::Config | Commands::Metadata) => None,
     }
 }
@@ -292,6 +323,7 @@ fn resolve_summary_window(period: SummaryPeriod, today: NaiveDate) -> SummaryWin
             to: today,
             date_label: format!("{today} (today)"),
             ai_period: "today",
+            exact_bounds: None,
         },
         SummaryPeriod::Yesterday => {
             let yesterday = today - Duration::days(1);
@@ -300,6 +332,7 @@ fn resolve_summary_window(period: SummaryPeriod, today: NaiveDate) -> SummaryWin
                 to: yesterday,
                 date_label: format!("{yesterday} (yesterday)"),
                 ai_period: "yesterday",
+                exact_bounds: None,
             }
         }
         SummaryPeriod::Week => {
@@ -309,6 +342,18 @@ fn resolve_summary_window(period: SummaryPeriod, today: NaiveDate) -> SummaryWin
                 to: today,
                 date_label: format!("{week_start} to {today} (week)"),
                 ai_period: "this week",
+                exact_bounds: None,
+            }
+        }
+        SummaryPeriod::Standup => {
+            let now = Local::now();
+            let from = now - Duration::hours(24);
+            SummaryWindow {
+                from: from.date_naive(),
+                to: today,
+                date_label: "last 24 hours (standup)".to_string(),
+                ai_period: "the last 24 hours",
+                exact_bounds: Some((from.with_timezone(&Utc), now.with_timezone(&Utc))),
             }
         }
     }
@@ -318,6 +363,10 @@ fn load_commits_for_window(
     database: &db::Database,
     window: &SummaryWindow,
 ) -> Result<Vec<db::Commit>, Box<dyn Error>> {
+    if let Some((from, to)) = window.exact_bounds {
+        return Ok(database.query_datetime_range(from, to)?);
+    }
+
     if window.from == window.to {
         return Ok(database.query_date(window.from)?);
     }
@@ -703,8 +752,9 @@ mod tests {
     use super::{
         AiSummaryAttempt, Commands, OutputFormat, ParsedCli, SummaryArgs, SummaryPeriod,
         build_summary_data, compute_cache_key, format_commit_time, format_config_paths,
-        format_file_size, output_format, parse_cli, render_empty_summary, render_summary_output,
-        resolve_summary_window, should_try_ai_summary, summary_request_from_cli, try_ai_summary,
+        format_file_size, format_metadata, output_format, parse_cli, render_empty_summary,
+        render_summary_output, resolve_summary_window, should_try_ai_summary,
+        summary_request_from_cli, try_ai_summary,
     };
     use crate::{
         ai::{AiError, AiProvider},
@@ -1191,6 +1241,27 @@ mod tests {
         }
     }
 
+    fn sample_commit_at(
+        hash: &str,
+        repo_name: &str,
+        repo_path: &str,
+        committed_at: chrono::DateTime<Utc>,
+    ) -> crate::db::Commit {
+        crate::db::Commit {
+            id: None,
+            hash: hash.to_string(),
+            message: format!("feat: update {repo_name}"),
+            repo_path: repo_path.to_string(),
+            repo_name: repo_name.to_string(),
+            branch: "main".to_string(),
+            files_changed: 3,
+            insertions: 12,
+            deletions: 4,
+            committed_at,
+            author_email: None,
+        }
+    }
+
     struct SuccessProvider(String);
 
     impl AiProvider for SuccessProvider {
@@ -1290,6 +1361,197 @@ mod tests {
         assert!(rendered.output.contains("a1  feat: update repo-a"));
         assert!(rendered.output.contains("Bob summary."));
         assert!(rendered.warning.as_deref().unwrap().contains("AI failed for first profile"));
+    }
+
+    #[test]
+    fn metadata_shows_size_count_and_oldest_for_empty_database() {
+        let database = crate::db::Database::open_in_memory().unwrap();
+
+        let output = format_metadata(&database, 0).unwrap();
+
+        assert!(output.contains("Database size:   0 bytes"));
+        assert!(output.contains("Total commits:   0"));
+        assert!(output.contains("Oldest commit:   -"));
+    }
+
+    #[test]
+    fn metadata_shows_correct_stats_after_inserting_commits() {
+        let database = crate::db::Database::open_in_memory().unwrap();
+
+        let earlier = Utc.with_ymd_and_hms(2026, 3, 8, 10, 0, 0).unwrap();
+        let later = Utc.with_ymd_and_hms(2026, 3, 10, 14, 0, 0).unwrap();
+
+        database
+            .insert_commit(&sample_commit_at("aaa1111", "repo-a", "/tmp/repo-a", earlier))
+            .unwrap();
+        database
+            .insert_commit(&sample_commit_at("bbb2222", "repo-b", "/tmp/repo-b", later))
+            .unwrap();
+
+        let output = format_metadata(&database, 50 * 1024 * 1024).unwrap();
+
+        assert!(output.contains("Database size:   50.00 MB"));
+        assert!(output.contains("Total commits:   2"));
+        // The oldest commit line should contain a formatted date, not "-"
+        assert!(!output.contains("Oldest commit:   -"));
+        assert!(output.contains("Oldest commit:   2026-03-08"));
+    }
+
+    #[test]
+    fn parses_standup_subcommand_with_summary_flags() {
+        let standup = parse_cli(["diddo", "standup"]).unwrap();
+        let standup_md = parse_cli(["diddo", "standup", "--md"]).unwrap();
+
+        assert_eq!(
+            standup.command,
+            Some(Commands::Standup(SummaryArgs::default()))
+        );
+        assert_eq!(
+            standup_md.command,
+            Some(Commands::Standup(SummaryArgs {
+                md: true,
+                raw: false,
+                json: false,
+                no_cache: false,
+            }))
+        );
+    }
+
+    #[test]
+    fn derives_standup_summary_request() {
+        let standup = summary_request_from_cli(parse_cli(["diddo", "standup"]).unwrap());
+
+        assert_eq!(
+            standup,
+            Some((SummaryPeriod::Standup, SummaryArgs::default()))
+        );
+    }
+
+    #[test]
+    fn resolves_standup_window_with_exact_24h_bounds() {
+        let today = NaiveDate::from_ymd_opt(2026, 3, 12).unwrap();
+
+        let window = resolve_summary_window(SummaryPeriod::Standup, today);
+
+        assert_eq!(window.date_label, "last 24 hours (standup)");
+        assert_eq!(window.ai_period, "the last 24 hours");
+        assert!(window.exact_bounds.is_some());
+        let (from, to) = window.exact_bounds.unwrap();
+        let diff = to - from;
+        assert_eq!(diff.num_hours(), 24);
+    }
+
+    #[test]
+    fn standup_renders_ai_summary_for_commits() {
+        let commits = vec![
+            sample_commit("abc1", "repo-a", "/tmp/repo-a", 9, 15),
+            sample_commit("def2", "repo-b", "/tmp/repo-b", 10, 30),
+        ];
+        let window = resolve_summary_window(
+            SummaryPeriod::Standup,
+            NaiveDate::from_ymd_opt(2026, 3, 10).unwrap(),
+        );
+        let database = crate::db::Database::open_in_memory().unwrap();
+        let rendered = render_summary_output(
+            &database,
+            SummaryArgs::default(),
+            window,
+            commits,
+            || Ok(AppConfig::default()),
+            |_| Ok(Box::new(SuccessProvider("Standup summary for last 24h.".to_string()))),
+        )
+        .unwrap();
+
+        assert!(rendered.output.contains("last 24 hours (standup)"));
+        assert!(rendered.output.contains("Standup summary for last 24h."));
+    }
+
+    #[test]
+    fn standup_renders_empty_period_message_when_no_commits() {
+        let window = resolve_summary_window(
+            SummaryPeriod::Standup,
+            NaiveDate::from_ymd_opt(2026, 3, 10).unwrap(),
+        );
+        let database = crate::db::Database::open_in_memory().unwrap();
+        let rendered = render_summary_output(
+            &database,
+            SummaryArgs::default(),
+            window,
+            Vec::new(),
+            || Err(std::io::Error::other("should not load config").into()),
+            |_| Ok(Box::new(SuccessProvider("unused".to_string()))),
+        )
+        .unwrap();
+
+        assert!(rendered.output.contains("No commits recorded for last 24 hours (standup)"));
+        assert_eq!(rendered.warning, None);
+    }
+
+    #[test]
+    fn standup_raw_skips_ai_and_shows_grouped_commits() {
+        let commits = vec![
+            sample_commit("abc1", "repo-a", "/tmp/repo-a", 9, 15),
+        ];
+        let window = resolve_summary_window(
+            SummaryPeriod::Standup,
+            NaiveDate::from_ymd_opt(2026, 3, 10).unwrap(),
+        );
+        let database = crate::db::Database::open_in_memory().unwrap();
+        let rendered = render_summary_output(
+            &database,
+            SummaryArgs {
+                md: false,
+                raw: true,
+                json: false,
+                no_cache: false,
+            },
+            window,
+            commits,
+            || Ok(AppConfig::default()),
+            |_| Err(crate::ai::AiError::new("should not be called")),
+        )
+        .unwrap();
+
+        assert!(rendered.output.contains("last 24 hours (standup)"));
+        assert!(rendered.output.contains("repo-a"));
+        assert_eq!(rendered.warning, None);
+    }
+
+    #[test]
+    fn standup_json_output_includes_date_label() {
+        let commits = vec![
+            sample_commit("abc1", "repo-a", "/tmp/repo-a", 9, 15),
+        ];
+        let window = resolve_summary_window(
+            SummaryPeriod::Standup,
+            NaiveDate::from_ymd_opt(2026, 3, 10).unwrap(),
+        );
+        let database = crate::db::Database::open_in_memory().unwrap();
+        let rendered = render_summary_output(
+            &database,
+            SummaryArgs {
+                md: false,
+                raw: false,
+                json: true,
+                no_cache: false,
+            },
+            window,
+            commits,
+            || Ok(AppConfig::default()),
+            |_| Ok(Box::new(SuccessProvider("JSON standup.".to_string()))),
+        )
+        .unwrap();
+
+        assert!(rendered.output.contains("\"date_label\": \"last 24 hours (standup)\""));
+    }
+
+    #[test]
+    fn date_based_windows_have_no_exact_bounds() {
+        let today = NaiveDate::from_ymd_opt(2026, 3, 12).unwrap();
+
+        assert!(resolve_summary_window(SummaryPeriod::Today, today).exact_bounds.is_none());
+        assert!(resolve_summary_window(SummaryPeriod::Yesterday, today).exact_bounds.is_none());
+        assert!(resolve_summary_window(SummaryPeriod::Week, today).exact_bounds.is_none());
     }
 
     #[test]
