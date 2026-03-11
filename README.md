@@ -15,7 +15,7 @@ Supported platforms: **macOS** (Apple Silicon, Intel), **Linux** (x86_64, aarch6
 If you use [Homebrew](https://brew.sh):
 
 ```bash
-brew tap drugoi/diddo
+brew tap drugoi/tap
 brew install diddo
 ```
 

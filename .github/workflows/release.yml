@@ -208,7 +208,7 @@ jobs:
           GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          git clone https://x-access-token:${GH_TOKEN}@github.com/drugoi/homebrew-diddo.git tap
+          git clone https://x-access-token:${GH_TOKEN}@github.com/drugoi/homebrew-tap.git tap
           cd tap
 
           sed -i 's/version ".*"/version "'"${VERSION}"'"/' Formula/diddo.rb
