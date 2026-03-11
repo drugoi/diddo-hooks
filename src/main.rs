@@ -5,6 +5,7 @@ mod hook;
 mod init;
 mod paths;
 mod render;
+mod summary_group;
 
 use clap::{ArgGroup, Args, Parser, Subcommand};
 use chrono::{Datelike, Duration, Local, NaiveDate};
@@ -218,6 +219,7 @@ fn run_summary_command(cli: ParsedCli) -> Result<(), Box<dyn Error>> {
     let today = Local::now().date_naive();
     let window = resolve_summary_window(period, today);
     let commits = load_commits_for_window(&database, &window)?;
+    let _groups = summary_group::group_commits_by_profile_then_repo(&commits);
     let rendered = render_summary_output(
         &database,
         summary_args,
