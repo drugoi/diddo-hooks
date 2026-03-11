@@ -55,7 +55,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: diddo-${{ matrix.target }}
-          path: "diddo-${{ steps.version.outputs.version }}-${{ matrix.target }}.tar.gz"
+          path: 'diddo-${{ steps.version.outputs.version }}-${{ matrix.target }}.tar.gz'
 
   build-linux:
     runs-on: ubuntu-22.04
@@ -102,7 +102,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: diddo-${{ matrix.target }}
-          path: "diddo-${{ steps.version.outputs.version }}-${{ matrix.target }}.tar.gz"
+          path: 'diddo-${{ steps.version.outputs.version }}-${{ matrix.target }}.tar.gz'
 
   build-windows:
     runs-on: windows-latest
@@ -138,7 +138,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: diddo-x86_64-pc-windows-msvc
-          path: "diddo-${{ steps.version.outputs.version }}-x86_64-pc-windows-msvc.zip"
+          path: 'diddo-${{ steps.version.outputs.version }}-x86_64-pc-windows-msvc.zip'
 
   release:
     needs: [build-macos, build-linux, build-windows]
@@ -178,3 +178,47 @@ jobs:
           files: release/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  update-homebrew:
+    needs: [release]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set version
+        id: version
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            echo "version=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Compute SHA256 for release assets
+        id: sha
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          BASE="https://github.com/drugoi/diddo-hooks/releases/download/v${VERSION}"
+          for target in aarch64-apple-darwin x86_64-apple-darwin aarch64-unknown-linux-gnu x86_64-unknown-linux-gnu; do
+            hash=$(curl -sL "${BASE}/diddo-${VERSION}-${target}.tar.gz" | sha256sum | awk '{print $1}')
+            key=$(echo "$target" | tr '-' '_')
+            echo "${key}=${hash}" >> $GITHUB_OUTPUT
+          done
+
+      - name: Update Homebrew formula
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          git clone https://x-access-token:${GH_TOKEN}@github.com/drugoi/homebrew-diddo.git tap
+          cd tap
+
+          sed -i 's/version ".*"/version "'"${VERSION}"'"/' Formula/diddo.rb
+          sed -i '/aarch64-apple-darwin/{n;s/sha256 ".*"/sha256 "${{ steps.sha.outputs.aarch64_apple_darwin }}"/}' Formula/diddo.rb
+          sed -i '/x86_64-apple-darwin/{n;s/sha256 ".*"/sha256 "${{ steps.sha.outputs.x86_64_apple_darwin }}"/}' Formula/diddo.rb
+          sed -i '/aarch64-unknown-linux-gnu/{n;s/sha256 ".*"/sha256 "${{ steps.sha.outputs.aarch64_unknown_linux_gnu }}"/}' Formula/diddo.rb
+          sed -i '/x86_64-unknown-linux-gnu/{n;s/sha256 ".*"/sha256 "${{ steps.sha.outputs.x86_64_unknown_linux_gnu }}"/}' Formula/diddo.rb
+
+          git config user.name "Nikita Bayev"
+          git config user.email "nikita@bayev.kz"
+          git add Formula/diddo.rb
+          git commit -m "Update diddo to ${VERSION}"
+          git push
