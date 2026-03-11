@@ -535,8 +535,6 @@ mod tests {
         assert_eq!(projects[1]["repo_name"], "zebra-app");
     }
 
-    // --- by_profile tests ---
-
     fn default_global_stats() -> GlobalStats {
         GlobalStats {
             total_commits: 1,

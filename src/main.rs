@@ -320,6 +320,7 @@ fn output_format(summary_args: SummaryArgs) -> OutputFormat {
     }
 }
 
+#[cfg(test)]
 fn try_ai_summary<F>(
     ai_config: &config::AiConfig,
     commits: &[db::Commit],
@@ -1246,9 +1247,9 @@ mod tests {
 
         assert!(rendered.output.contains("Profile: alice@x.com"));
         assert!(rendered.output.contains("Profile: bob@y.com"));
-        assert!(rendered.output.contains("repo-a (1 commit)"), "failed profile should show raw commits");
+        assert!(rendered.output.contains("repo-a (1 commit)"));
         assert!(rendered.output.contains("a1  feat: update repo-a"));
-        assert!(rendered.output.contains("Bob summary."), "successful profile should show AI summary");
-        assert!(rendered.warning.as_deref().unwrap().contains("AI failed for first profile"), "combined warning should mention failure");
+        assert!(rendered.output.contains("Bob summary."));
+        assert!(rendered.warning.as_deref().unwrap().contains("AI failed for first profile"));
     }
 }

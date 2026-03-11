@@ -128,7 +128,7 @@ mod tests {
 
         let groups = group_commits_by_profile_then_repo(&commits);
 
-        assert_eq!(groups.len(), 2, "two profiles");
+        assert_eq!(groups.len(), 2);
 
         let first = &groups[0];
         let second = &groups[1];
