@@ -8,7 +8,6 @@ repository = "https://github.com/drugoi/diddo-hooks"
 publish = false
 
 [package.metadata.release]
-tag-prefix = "v"
 push = true
 
 [dependencies]
