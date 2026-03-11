@@ -6,7 +6,7 @@
 
 - **Behavior:** Installs a global `post-commit` hook, stores commit metadata in a local SQLite database, and can summarize that history via AI CLI tools (claude, codex, opencode, cursor) or direct API (OpenAI, Anthropic).
 - **Layout:** Entrypoint and summary flow in `src/main.rs`; hook logic in `src/hook.rs`; AI provider selection and prompt building in `src/ai/` (`mod.rs`, `cli_provider.rs`, `api_provider.rs`); persistence in `src/db.rs`; config in `src/config.rs`; paths in `src/paths.rs`; rendering in `src/render.rs`; grouping in `src/summary_group.rs`; init/uninstall in `src/init.rs`. Design and implementation notes live in `docs/plans/`.
-- **Verification:** Run `cargo test` for the full suite. Use `cargo run -- --help` to confirm CLI behavior without installing. Releases are built by the GitHub Actions workflow on tag push `v*` or manual dispatch with a version input.
+- **Verification:** Run `cargo test` for the full suite. Use `cargo run -- --help` to confirm CLI behavior without installing. Releases: use `cargo release patch` (or `minor`/exact version); then push the tag to trigger the GitHub Actions workflow (`v*`).
 
 ## Build & Test Commands
 

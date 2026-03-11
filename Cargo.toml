@@ -1,9 +1,15 @@
 [package]
 name = "diddo"
-version = "0.3.1"
+version = "0.4.0"
 edition = "2024"
 description = "Track your git commits, get AI-powered daily summaries"
 license = "MIT"
+repository = "https://github.com/drugoi/diddo-hooks"
+publish = false
+
+[package.metadata.release]
+tag-prefix = "v"
+push = true
 
 [dependencies]
 clap = { version = "4.5.60", features = ["derive"] }
