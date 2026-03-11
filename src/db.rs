@@ -160,6 +160,19 @@ impl Database {
         Ok(())
     }
 
+    pub fn commit_count(&self) -> Result<i64> {
+        self.connection
+            .query_row("SELECT COUNT(*) FROM commits", [], |row| row.get(0))
+    }
+
+    pub fn oldest_commit_date(&self) -> Result<Option<String>> {
+        self.connection.query_row(
+            "SELECT MIN(committed_at) FROM commits",
+            [],
+            |row| row.get(0),
+        )
+    }
+
     /// Column names of the commits table.
     pub fn commit_table_column_names(&self) -> Result<Vec<String>> {
         let mut stmt = self.connection.prepare("PRAGMA table_info(commits)")?;

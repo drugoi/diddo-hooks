@@ -88,6 +88,8 @@ enum Commands {
     Hook,
     /// Show the config location.
     Config,
+    /// Show database metadata.
+    Metadata,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -166,6 +168,7 @@ fn main() {
         Some(Commands::Uninstall) => run_uninstall_command(),
         Some(Commands::Hook) => run_hook_command(),
         Some(Commands::Config) => run_config_command(),
+        Some(Commands::Metadata) => run_metadata_command(),
         _ => run_summary_command(cli),
     };
 
@@ -211,6 +214,39 @@ fn format_config_paths(paths: &paths::AppPaths) -> String {
     )
 }
 
+fn format_file_size(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = 1024 * KB;
+    const GB: u64 = 1024 * MB;
+
+    if bytes >= GB {
+        format!("{:.2} GB", bytes as f64 / GB as f64)
+    } else if bytes >= MB {
+        format!("{:.2} MB", bytes as f64 / MB as f64)
+    } else {
+        format!("{:.2} KB", bytes as f64 / KB as f64)
+    }
+}
+
+fn run_metadata_command() -> Result<(), Box<dyn Error>> {
+    let paths = paths::AppPaths::new()?;
+    let database = db::Database::open(&paths.db_path)?;
+
+    let size_bytes = std::fs::metadata(&paths.db_path)
+        .map(|m| m.len())
+        .unwrap_or(0);
+    let count = database.commit_count()?;
+    let oldest = database
+        .oldest_commit_date()?
+        .unwrap_or_else(|| "-".to_string());
+
+    println!("Database size:   {}", format_file_size(size_bytes));
+    println!("Total commits:   {count}");
+    println!("Oldest commit:   {oldest}");
+
+    Ok(())
+}
+
 fn run_summary_command(cli: ParsedCli) -> Result<(), Box<dyn Error>> {
     let (period, summary_args) = summary_request_from_cli(cli)
         .ok_or_else(|| std::io::Error::other("summary command was not selected"))?;
@@ -242,7 +278,7 @@ fn summary_request_from_cli(cli: ParsedCli) -> Option<(SummaryPeriod, SummaryArg
         Some(Commands::Today(summary)) => Some((SummaryPeriod::Today, summary)),
         Some(Commands::Yesterday(summary)) => Some((SummaryPeriod::Yesterday, summary)),
         Some(Commands::Week(summary)) => Some((SummaryPeriod::Week, summary)),
-        Some(Commands::Init | Commands::Uninstall | Commands::Hook | Commands::Config) => None,
+        Some(Commands::Init | Commands::Uninstall | Commands::Hook | Commands::Config | Commands::Metadata) => None,
     }
 }
 

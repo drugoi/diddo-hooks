@@ -153,7 +153,10 @@ Other commands:
 diddo init
 diddo uninstall
 diddo config
+diddo metadata
 ```
+
+- **`diddo metadata`** — Show database metadata: file size, total commit count, and oldest recorded commit.
 
 ## AI Providers
 
