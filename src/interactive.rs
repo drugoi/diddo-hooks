@@ -1,4 +1,5 @@
 use std::io::{self, Write};
+use std::sync::Arc;
 
 use crossterm::{
     cursor,
@@ -116,14 +117,17 @@ pub fn run() -> Result<Option<String>, Box<dyn std::error::Error>> {
     terminal::enable_raw_mode()?;
 
     let prev_hook = std::panic::take_hook();
+    let prev_hook_rc = Arc::new(prev_hook);
+    let prev_hook_restore = prev_hook_rc.clone();
     std::panic::set_hook(Box::new(move |info| {
         restore_terminal(&mut io::stdout());
-        prev_hook(info);
+        (*prev_hook_rc)(info);
     }));
 
     let result = run_inner();
 
     let _ = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| (*prev_hook_restore)(info)));
     let mut stdout = io::stdout();
     execute!(stdout, cursor::Show)?;
     terminal::disable_raw_mode()?;
