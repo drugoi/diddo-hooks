@@ -24,6 +24,11 @@ struct MenuItem {
 
 const MENU_ITEMS: &[MenuItem] = &[
     MenuItem {
+        key: "standup",
+        label: "Standup",
+        description: "Last 24 hours summary",
+    },
+    MenuItem {
         key: "today",
         label: "Today",
         description: "Show today's summary",
@@ -37,11 +42,6 @@ const MENU_ITEMS: &[MenuItem] = &[
         key: "week",
         label: "Week",
         description: "Show this week's summary",
-    },
-    MenuItem {
-        key: "standup",
-        label: "Standup",
-        description: "Last 24 hours summary",
     },
     MenuItem {
         key: "config",
@@ -93,12 +93,12 @@ fn action_from_key(code: KeyCode, item_count: usize) -> Action {
     }
 }
 
-fn apply_action(action: Action, selected: usize, item_count: usize) -> (usize, bool) {
+fn apply_action(action: Action, selected: usize, item_count: usize) -> usize {
     match action {
-        Action::MoveUp => (selected.saturating_sub(1), false),
-        Action::MoveDown => ((selected + 1).min(item_count - 1), false),
-        Action::JumpTo(index) => (index, false),
-        Action::Select | Action::Quit | Action::None => (selected, false),
+        Action::MoveUp => selected.saturating_sub(1),
+        Action::MoveDown => (selected + 1).min(item_count - 1),
+        Action::JumpTo(index) => index,
+        Action::Select | Action::Quit | Action::None => selected,
     }
 }
 
@@ -169,9 +169,7 @@ fn run_inner() -> Result<Option<String>, Box<dyn std::error::Error>> {
                     return Ok(None);
                 }
                 _ => {
-                    let (new_selected, _) =
-                        apply_action(action, selected, MENU_ITEMS.len());
-                    selected = new_selected;
+                    selected = apply_action(action, selected, MENU_ITEMS.len());
                     draw(&mut stdout, selected)?;
                 }
             }
@@ -247,25 +245,25 @@ mod tests {
 
     #[test]
     fn apply_action_move_up_saturates_at_zero() {
-        assert_eq!(apply_action(Action::MoveUp, 0, 8), (0, false));
-        assert_eq!(apply_action(Action::MoveUp, 3, 8), (2, false));
+        assert_eq!(apply_action(Action::MoveUp, 0, 8), 0);
+        assert_eq!(apply_action(Action::MoveUp, 3, 8), 2);
     }
 
     #[test]
     fn apply_action_move_down_clamps_at_last_item() {
-        assert_eq!(apply_action(Action::MoveDown, 7, 8), (7, false));
-        assert_eq!(apply_action(Action::MoveDown, 5, 8), (6, false));
+        assert_eq!(apply_action(Action::MoveDown, 7, 8), 7);
+        assert_eq!(apply_action(Action::MoveDown, 5, 8), 6);
     }
 
     #[test]
     fn apply_action_jump_to_sets_index_directly() {
-        assert_eq!(apply_action(Action::JumpTo(4), 0, 8), (4, false));
+        assert_eq!(apply_action(Action::JumpTo(4), 0, 8), 4);
     }
 
     #[test]
     fn menu_items_keys_are_valid_commands() {
         let valid = [
-            "today", "yesterday", "week", "standup", "config", "metadata", "init", "uninstall",
+            "standup", "today", "yesterday", "week", "config", "metadata", "init", "uninstall",
         ];
         for item in MENU_ITEMS {
             assert!(
