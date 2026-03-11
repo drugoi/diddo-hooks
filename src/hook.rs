@@ -147,6 +147,39 @@ mod tests {
     use crate::db::Database;
 
     #[test]
+    fn stores_author_email_from_git_config() {
+        let database = Database::open_in_memory().unwrap();
+        let committed_at = Utc.with_ymd_and_hms(2026, 3, 10, 12, 0, 0).unwrap();
+
+        run_with(
+            &database,
+            |args| match args {
+                ["rev-parse", "--short", "HEAD"] => Ok("abc1234\n".to_string()),
+                ["log", "-1", "--format=%B"] => Ok("feat: add hook storage\n".to_string()),
+                ["log", "-1", "--format=%cI"] => Ok("2026-03-10T12:00:00+00:00\n".to_string()),
+                ["rev-parse", "--show-toplevel"] => {
+                    Ok("/Users/example/projects/diddo\n".to_string())
+                }
+                ["rev-parse", "--abbrev-ref", "HEAD"] => Ok("feature/diddo\n".to_string()),
+                ["config", "user.email"] => Ok("work@company.com\n".to_string()),
+                _ => Err(io::Error::other("unexpected git arguments")),
+            },
+            || Ok(" 2 files changed, 10 insertions(+), 3 deletions(-)\n".to_string()),
+        )
+        .unwrap();
+
+        let commits = database
+            .query_date(committed_at.with_timezone(&Local).date_naive())
+            .unwrap();
+
+        assert_eq!(commits.len(), 1);
+        assert_eq!(
+            commits[0].author_email,
+            Some("work@company.com".to_string())
+        );
+    }
+
+    #[test]
     fn stores_git_metadata_in_database() {
         let database = Database::open_in_memory().unwrap();
         let committed_at = Utc.with_ymd_and_hms(2026, 3, 10, 12, 0, 0).unwrap();
