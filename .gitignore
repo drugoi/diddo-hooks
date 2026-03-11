@@ -1,2 +1,3 @@
 .worktrees/
 /target
+.DS_Store

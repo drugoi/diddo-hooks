@@ -8,7 +8,7 @@ It installs a global `post-commit` hook, stores commit metadata in a local SQLit
 
 ## Install
 
-Supported platforms: **macOS** (Apple Silicon, Intel), **Linux** (x86_64, aarch64), **Windows** (x86_64, ARM64). Pre-built binaries are published for each [release](https://github.com/drugoi/diddo-hooks/releases).
+Supported platforms: **macOS** (Apple Silicon, Intel), **Linux** (x86_64, aarch64), **Windows** (x86_64, ARM64). Pre-built binaries are published for each [release](https://github.com/drugoi/diddo-hooks/releases). Pre-built Linux binaries are built on Ubuntu 22.04 and require **glibc 2.35+** (e.g. Ubuntu 22.04 or Debian 12). On older distros, install from source: `cargo install --path .`.
 
 ### macOS and Linux
 
@@ -37,6 +37,11 @@ To pin a version:
 ```powershell
 $env:DIDDO_VERSION = "0.1.0"; irm https://raw.githubusercontent.com/drugoi/diddo-hooks/main/install.ps1 | iex
 ```
+
+Install options (environment variables):
+
+- **DIDDO_VERSION** — Pin the install to a specific release (e.g. `0.1.0`).
+- **DIDDO_INSTALL_DIR** — Directory where the binary is installed. Defaults: `$HOME/.local/bin` (macOS/Linux), `%LOCALAPPDATA%\diddo` (Windows).
 
 Alternatively, download the `diddo-<version>-x86_64-pc-windows-msvc.zip` (or ARM64) from [Releases](https://github.com/drugoi/diddo-hooks/releases), extract `diddo.exe`, and add the folder to your PATH.
 
@@ -127,6 +132,9 @@ diddo week --raw
 diddo today --no-cache
 ```
 
+- **`--md`** — Output summary as markdown.
+- **`--json`** — Output summary as JSON.
+- **`--raw`** — Skip AI and show grouped raw commit data.
 - **`--no-cache`** — Skip the AI summary cache and force a fresh summary.
 
 Current CLI behavior:
@@ -179,11 +187,42 @@ Default API models:
 - OpenAI: `gpt-4o-mini`
 - Anthropic: `claude-sonnet-4-6`
 
+### Default prompt
+
+When `ai.prompt_instructions` is not set (or empty), the CLI uses a built-in prompt. There is no config key for the default; it is fixed in the binary. The prompt sent to the AI is (with `{period}` and commit count/list filled in):
+
+```text
+You are summarizing git activity for {period}.
+Write a concise status update with the main themes, notable repos, and momentum.
+Use only the commit data below.
+
+Period: {period}
+Commit count: {n}
+
+Commits:
+1. [repo_name] message (hash) on branch at 2026-03-10T12:00:00Z; files: 3, +12, -4
+...
+
+Return plain text only. Keep it brief and useful, in 2 short paragraphs max.
+```
+
+`{period}` is e.g. today, yesterday, or this week; `{n}` is the commit count. The list is one line per commit in the format above.
+
 ## Config File
 
 The config file is optional. If it does not exist, `diddo` still works for raw summaries and for AI summaries when a supported CLI tool is already installed.
 
 Run `diddo config` to get the exact config path on your machine.
+
+Options:
+
+| Key | Description |
+|-----|-------------|
+| `ai.provider` | API provider: `openai` or `anthropic` |
+| `ai.api_key` | API key (overrides environment variables) |
+| `ai.model` | Model for direct API; defaults: `gpt-4o-mini` (OpenAI), `claude-sonnet-4-6` (Anthropic) |
+| `ai.prompt_instructions` | Custom AI instructions (tone, language, length); period and commit list are always appended |
+| `ai.cli.prefer` | CLI/API preference: `api`, `cli`, `claude`, `codex`, `opencode`, or `cursor-agent` |
 
 Example:
 
@@ -219,7 +258,7 @@ export DIDDO_ANTHROPIC_KEY=your-anthropic-key
 Notes:
 
 - `ai.provider` accepts `openai` or `anthropic`
-- `ai.cli.prefer` accepts `api`, `cli`, `claude`, `codex`, `opencode`, or `cursor-agent`
+- `ai.cli.prefer` accepts `api`, `cli`, `claude`, `codex`, `opencode`, or `cursor-agent` (alias: `cursor_agent`)
 - `ai.model` applies to direct API providers only; CLI tools use their own default model selection
 - `ai.api_key` in the config file overrides environment variables
 - `ai.prompt_instructions` (optional): when set, replaces the default AI instructions (tone, language, length); period, commit count, and commit list are always appended. Use for a different language or more concise output. Empty or missing = default instructions.
