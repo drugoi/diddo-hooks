@@ -50,6 +50,7 @@ where
         insertions,
         deletions,
         committed_at,
+        author_email: None,
     })
 }
 

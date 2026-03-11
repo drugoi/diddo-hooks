@@ -422,6 +422,7 @@ mod tests {
             insertions: 12,
             deletions: 4,
             committed_at: Utc.with_ymd_and_hms(2026, 3, 10, hour, minute, 0).unwrap(),
+            author_email: None,
         }
     }
 }
