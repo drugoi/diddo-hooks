@@ -10,6 +10,15 @@ It installs a global `post-commit` hook, stores commit metadata in a local SQLit
 
 Supported platforms: **macOS** (Apple Silicon, Intel), **Linux** (x86_64, aarch64), **Windows** (x86_64, ARM64). Pre-built binaries are published for each [release](https://github.com/drugoi/diddo-hooks/releases). Pre-built Linux binaries are built on Ubuntu 22.04 and require **glibc 2.35+** (e.g. Ubuntu 22.04 or Debian 12). On older distros, install from source: `cargo install --path .`.
 
+### Homebrew (macOS & Linux)
+
+If you use [Homebrew](https://brew.sh):
+
+```bash
+brew tap drugoi/diddo
+brew install diddo
+```
+
 ### macOS and Linux
 
 Install the latest release:

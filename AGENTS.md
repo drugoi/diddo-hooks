@@ -10,10 +10,13 @@
 
 ## Learned User Preferences
 
-(Add here as you learn them.)
+- Prefers US English for standard repo files (e.g. LICENSE, not LICENCE).
+- Prefers `.md` extension for repo-root documentation files (e.g. `LICENSE.md`).
 
 ## Learned Workspace Facts
 
 - When a CLI subcommand is missing or behavior looks outdated after `cargo install --path .`, check which binary runs (e.g. `which diddo`); if `~/.local/bin` precedes `~/.cargo/bin` in PATH, the shell may be running an older binary—reinstall from the desired path or put `~/.cargo/bin` first in PATH.
 - Tests avoid real I/O via dependency injection: `hook::run_with` injects git and diff-stat functions; summary tests inject config loader and `create_provider`. Use `db::Database::open_in_memory()` in tests instead of a file path.
 - Linux aarch64 cross-compile uses a custom linker; see `.cargo/config.toml` (`linker = "aarch64-linux-gnu-gcc"`). The release workflow installs `gcc-aarch64-linux-gnu` on the runner for that target.
+- Homebrew distribution uses a separate `drugoi/homebrew-diddo` tap repo. The formula is at `Formula/diddo.rb` and references pre-built tarballs from `diddo-hooks` GitHub Releases.
+- The project copyright holder is Nikita Bayev (MIT license, 2026).
