@@ -109,6 +109,8 @@ Hooks dir: C:\Users\you\AppData\Roaming\diddo\hooks
 
 ## Usage
 
+Run `diddo` with no arguments in a terminal to launch **interactive mode** — an arrow-key menu of all available commands.
+
 Show summaries:
 
 ```bash

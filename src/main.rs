@@ -3,6 +3,7 @@ mod config;
 mod db;
 mod hook;
 mod init;
+mod interactive;
 mod paths;
 mod render;
 mod summary_group;
@@ -165,8 +166,28 @@ where
 }
 
 fn main() {
-    let cli = parse_cli(std::env::args_os()).unwrap_or_else(|error| error.exit());
+    let raw_args: Vec<OsString> = std::env::args_os().collect();
+    let is_bare_invocation = raw_args.len() == 1;
 
+    if is_bare_invocation && std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
+        let selected = match interactive::run() {
+            Ok(Some(command)) => command,
+            Ok(None) => return,
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+        };
+        let cli = parse_cli(["diddo", selected.as_str()]).unwrap_or_else(|error| error.exit());
+        run_cli(cli);
+        return;
+    }
+
+    let cli = parse_cli(raw_args).unwrap_or_else(|error| error.exit());
+    run_cli(cli);
+}
+
+fn run_cli(cli: ParsedCli) {
     let result = match cli.command {
         Some(Commands::Init) => run_init_command(),
         Some(Commands::Uninstall) => run_uninstall_command(),
