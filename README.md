@@ -116,6 +116,7 @@ diddo
 diddo today
 diddo yesterday
 diddo week
+diddo standup
 ```
 
 Output modes:
@@ -139,6 +140,7 @@ diddo today --no-cache
 
 Current CLI behavior:
 
+- `diddo standup` shows commits from the last 24 hours (`[now - 24h, now]`), useful when your daily meeting is in the afternoon
 - `diddo` and `diddo today` are equivalent
 - `--md`, `--json`, and `--raw` are summary-only flags
 - `--raw` skips AI and shows grouped commit data
