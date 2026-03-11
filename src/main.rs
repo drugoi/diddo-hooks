@@ -219,7 +219,6 @@ fn run_summary_command(cli: ParsedCli) -> Result<(), Box<dyn Error>> {
     let today = Local::now().date_naive();
     let window = resolve_summary_window(period, today);
     let commits = load_commits_for_window(&database, &window)?;
-    let _groups = summary_group::group_commits_by_profile_then_repo(&commits);
     let rendered = render_summary_output(
         &database,
         summary_args,
@@ -291,13 +290,21 @@ fn should_try_ai_summary(summary_args: SummaryArgs) -> bool {
     !summary_args.raw
 }
 
-fn compute_cache_key(provider_id: &str, model_id: &str, period: &str, prompt: &str) -> String {
+fn compute_cache_key(
+    provider_id: &str,
+    model_id: &str,
+    period: &str,
+    profile: &str,
+    prompt: &str,
+) -> String {
     let mut hasher = Sha256::new();
     hasher.update(provider_id.as_bytes());
     hasher.update(b"\0");
     hasher.update(model_id.as_bytes());
     hasher.update(b"\0");
     hasher.update(period.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(profile.as_bytes());
     hasher.update(b"\0");
     hasher.update(prompt.as_bytes());
     format!("{:x}", hasher.finalize())
@@ -375,68 +382,138 @@ where
         });
     }
 
-    let ai_attempt = if should_try_ai_summary(summary_args) {
+    let mut groups = summary_group::group_commits_by_profile_then_repo(&commits);
+    let period = window.ai_period;
+
+    let (combined_summary, warning) = if should_try_ai_summary(summary_args) {
         let config = load_config()?;
-        let period = window.ai_period;
-        let prompt = ai::build_prompt(
-            &commits,
-            period,
-            config.ai.resolved_prompt_instructions(),
-        );
-        let cache_key_opt = ai::primary_provider_identity(&config.ai)
-            .ok()
-            .map(|(provider_id, model_id)| {
-                compute_cache_key(&provider_id, &model_id, period, &prompt)
-            });
-        let cached = match (cache_key_opt.as_deref(), summary_args.no_cache) {
-            (Some(key), false) => database.get_cached_summary(key).ok().flatten(),
-            _ => None,
+        let instructions = config.ai.resolved_prompt_instructions();
+        let provider_identity = ai::primary_provider_identity(&config.ai).ok();
+        let provider = match create_provider(&config.ai) {
+            Ok(p) => p,
+            Err(error) => {
+                let summary = build_summary_data(window.date_label.clone(), None, commits.clone());
+                let output = match output_format(summary_args) {
+                    OutputFormat::Terminal => render::render_terminal_to_string(&summary),
+                    OutputFormat::Markdown => render::render_markdown(&summary),
+                    OutputFormat::Json => render::render_json(&summary),
+                };
+                return Ok(RenderedSummary {
+                    output,
+                    warning: Some(format!(
+                        "AI summary unavailable: {error}. Falling back to raw output."
+                    )),
+                });
+            }
         };
-        if let Some(cached_summary) = cached {
-            AiSummaryAttempt {
-                summary: Some(cached_summary),
-                warning: None,
-            }
-        } else {
-            let show_indicator = std::io::stderr().is_terminal();
-            if show_indicator {
-                let pb = ProgressBar::new_spinner();
-                pb.set_style(
-                    ProgressStyle::default_spinner()
-                        .template("{spinner} {msg}")
-                        .unwrap(),
-                );
-                pb.set_message("Generating AI summary...");
-                pb.enable_steady_tick(StdDuration::from_millis(80));
-                let attempt =
-                    try_ai_summary(&config.ai, &commits, period, true, create_provider);
-                pb.finish_and_clear();
-                if let (Some(ref key), Some(ref summary)) =
-                    (cache_key_opt.as_ref(), attempt.summary.as_ref())
-                {
-                    let _ = database.set_cached_summary(key, summary);
-                }
-                attempt
+        let show_indicator = std::io::stderr().is_terminal();
+        let mut warnings = Vec::new();
+
+        for profile_group in groups.iter_mut() {
+            let profile_commits: Vec<db::Commit> = profile_group
+                .repos
+                .iter()
+                .flat_map(|r| r.commits.iter().cloned())
+                .collect();
+            let prompt = ai::build_prompt(&profile_commits, period, instructions);
+            let cache_key_opt = provider_identity.as_ref().map(|(provider_id, model_id)| {
+                compute_cache_key(
+                    provider_id,
+                    model_id,
+                    period,
+                    &profile_group.profile_label,
+                    &prompt,
+                )
+            });
+            let cached = match (cache_key_opt.as_deref(), summary_args.no_cache) {
+                (Some(key), false) => database.get_cached_summary(key).ok().flatten(),
+                _ => None,
+            };
+            let summary = if let Some(cached_summary) = cached {
+                Some(cached_summary)
             } else {
-                eprintln!("Generating AI summary...");
-                let attempt =
-                    try_ai_summary(&config.ai, &commits, period, true, create_provider);
-                if let (Some(ref key), Some(ref summary)) =
-                    (cache_key_opt.as_ref(), attempt.summary.as_ref())
-                {
-                    let _ = database.set_cached_summary(key, summary);
+                if show_indicator {
+                    let pb = ProgressBar::new_spinner();
+                    pb.set_style(
+                        ProgressStyle::default_spinner()
+                            .template("{spinner} {msg}")
+                            .unwrap(),
+                    );
+                    pb.set_message("Generating AI summary...");
+                    pb.enable_steady_tick(StdDuration::from_millis(80));
+                    let attempt = match provider.summarize(&profile_commits, period) {
+                        Ok(s) => AiSummaryAttempt {
+                            summary: Some(s),
+                            warning: None,
+                        },
+                        Err(error) => AiSummaryAttempt {
+                            summary: None,
+                            warning: Some(format!(
+                                "AI summary failed: {error}. Falling back to raw output."
+                            )),
+                        },
+                    };
+                    pb.finish_and_clear();
+                    if let Some(ref w) = attempt.warning {
+                        warnings.push(w.clone());
+                    }
+                    if let (Some(ref key), Some(ref s)) =
+                        (cache_key_opt.as_ref(), attempt.summary.as_ref())
+                    {
+                        let _ = database.set_cached_summary(key, s);
+                    }
+                    attempt.summary
+                } else {
+                    eprintln!("Generating AI summary...");
+                    let attempt = match provider.summarize(&profile_commits, period) {
+                        Ok(s) => AiSummaryAttempt {
+                            summary: Some(s),
+                            warning: None,
+                        },
+                        Err(error) => AiSummaryAttempt {
+                            summary: None,
+                            warning: Some(format!(
+                                "AI summary failed: {error}. Falling back to raw output."
+                            )),
+                        },
+                    };
+                    if let Some(ref w) = attempt.warning {
+                        warnings.push(w.clone());
+                    }
+                    if let (Some(ref key), Some(ref s)) =
+                        (cache_key_opt.as_ref(), attempt.summary.as_ref())
+                    {
+                        let _ = database.set_cached_summary(key, s);
+                    }
+                    attempt.summary
                 }
-                attempt
+            };
+            if let Some(s) = summary {
+                profile_group.ai_summary = Some(s);
             }
         }
+
+        let combined = groups
+            .iter()
+            .filter_map(|g| g.ai_summary.as_ref().map(String::as_str))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        let combined_summary = if combined.is_empty() {
+            None
+        } else {
+            Some(combined)
+        };
+        let warning = if warnings.is_empty() {
+            None
+        } else {
+            Some(warnings.join("; "))
+        };
+        (combined_summary, warning)
     } else {
-        AiSummaryAttempt {
-            summary: None,
-            warning: None,
-        }
+        (None, None)
     };
 
-    let summary = build_summary_data(window.date_label, ai_attempt.summary, commits);
+    let summary = build_summary_data(window.date_label, combined_summary, commits);
     let output = match output_format(summary_args) {
         OutputFormat::Terminal => render::render_terminal_to_string(&summary),
         OutputFormat::Markdown => render::render_markdown(&summary),
@@ -445,7 +522,7 @@ where
 
     Ok(RenderedSummary {
         output,
-        warning: ai_attempt.warning,
+        warning,
     })
 }
 
@@ -539,18 +616,20 @@ mod tests {
     #[test]
     fn cache_key_is_deterministic_and_different_for_different_inputs() {
         let prompt = "Period: today\n\n1. [repo] fix: bug (abc) on main at 2026-03-10T12:00:00Z\n";
-        let key1 = compute_cache_key("openai", "gpt-4o-mini", "today", prompt);
-        let key2 = compute_cache_key("openai", "gpt-4o-mini", "today", prompt);
+        let key1 = compute_cache_key("openai", "gpt-4o-mini", "today", "unknown", prompt);
+        let key2 = compute_cache_key("openai", "gpt-4o-mini", "today", "unknown", prompt);
         assert_eq!(key1, key2);
 
-        let key3 = compute_cache_key("anthropic", "gpt-4o-mini", "today", prompt);
+        let key3 = compute_cache_key("anthropic", "gpt-4o-mini", "today", "unknown", prompt);
         assert_ne!(key1, key3);
-        let key4 = compute_cache_key("openai", "other-model", "today", prompt);
+        let key4 = compute_cache_key("openai", "other-model", "today", "unknown", prompt);
         assert_ne!(key1, key4);
-        let key5 = compute_cache_key("openai", "gpt-4o-mini", "yesterday", prompt);
+        let key5 = compute_cache_key("openai", "gpt-4o-mini", "yesterday", "unknown", prompt);
         assert_ne!(key1, key5);
-        let key6 = compute_cache_key("openai", "gpt-4o-mini", "today", "different prompt");
+        let key6 = compute_cache_key("openai", "gpt-4o-mini", "today", "unknown", "different prompt");
         assert_ne!(key1, key6);
+        let key7 = compute_cache_key("openai", "gpt-4o-mini", "today", "test@example.com", prompt);
+        assert_ne!(key1, key7);
     }
 
     #[test]
@@ -578,7 +657,7 @@ mod tests {
             config.ai.resolved_prompt_instructions(),
         );
         let (provider_id, model_id) = crate::ai::primary_provider_identity(&config.ai).unwrap();
-        let key = compute_cache_key(&provider_id, &model_id, period, &prompt);
+        let key = compute_cache_key(&provider_id, &model_id, period, "unknown", &prompt);
         database.set_cached_summary(&key, "Pre-cached summary").unwrap();
 
         let window = resolve_summary_window(

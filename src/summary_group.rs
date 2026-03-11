@@ -16,6 +16,8 @@ pub struct RepoGroup {
 pub struct ProfileGroup {
     pub profile_label: String,
     pub repos: Vec<RepoGroup>,
+    /// AI-generated summary for this profile (set after summarization).
+    pub ai_summary: Option<String>,
 }
 
 /// Normalizes author_email to a profile key: trim; if empty use "unknown".
@@ -74,6 +76,7 @@ pub fn group_commits_by_profile_then_repo(commits: &[Commit]) -> Vec<ProfileGrou
         out.push(ProfileGroup {
             profile_label,
             repos,
+            ai_summary: None,
         });
     }
     out.sort_by(|a, b| a.profile_label.cmp(&b.profile_label));
