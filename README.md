@@ -145,6 +145,8 @@ Current CLI behavior:
 - `--md` and `--json` still try AI first unless you also use `--raw`
 - If no commits are recorded for the selected period, `diddo` prints an empty-period message instead of failing
 
+Summaries are grouped by git profile (`user.email`) then by repo; there is one AI summary per profile. Commits with no configured email are grouped under "unknown".
+
 Other commands:
 
 ```bash
