@@ -409,10 +409,13 @@ prompt_instructions = " Summarize in German. One paragraph. "
         assert_eq!(config.ai.resolved_prompt_instructions(), None);
 
         let with_whitespace = temp.join("with_ws.toml");
-        fs::write(&with_whitespace, r#"[ai]
+        fs::write(
+            &with_whitespace,
+            r#"[ai]
 prompt_instructions = "  \n\t "
-"#)
-            .unwrap();
+"#,
+        )
+        .unwrap();
         let config = AppConfig::load(&with_whitespace).unwrap();
         assert_eq!(config.ai.resolved_prompt_instructions(), None);
 

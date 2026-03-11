@@ -149,7 +149,9 @@ fn try_select_api_provider(config: &AiConfig, required: bool) -> Result<Option<P
 
     let Some(api_kind) = ApiKind::from_name(&provider_name) else {
         return if required {
-            Err(AiError::new(format!("unsupported AI provider: {provider_name}")))
+            Err(AiError::new(format!(
+                "unsupported AI provider: {provider_name}"
+            )))
         } else {
             Ok(None)
         };
@@ -220,7 +222,11 @@ impl AiProvider for FallbackProvider {
 }
 
 #[allow(dead_code)]
-pub fn build_prompt(commits: &[Commit], period: &str, instructions_override: Option<&str>) -> String {
+pub fn build_prompt(
+    commits: &[Commit],
+    period: &str,
+    instructions_override: Option<&str>,
+) -> String {
     if let Some(s) = instructions_override {
         let mut prompt = s.to_string();
         prompt.push_str(&format!(
