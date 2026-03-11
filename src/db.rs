@@ -561,6 +561,47 @@ mod tests {
     }
 
     #[test]
+    fn commit_count_returns_zero_for_empty_database() {
+        let database = Database::open_in_memory().unwrap();
+
+        assert_eq!(database.commit_count().unwrap(), 0);
+    }
+
+    #[test]
+    fn commit_count_returns_number_of_inserted_commits() {
+        let database = Database::open_in_memory().unwrap();
+        let today = Local::now().date_naive();
+        let committed_at = local_datetime_to_utc(today, 12, 0);
+
+        database.insert_commit(&build_commit("aaa1111", "first", committed_at)).unwrap();
+        database.insert_commit(&build_commit("bbb2222", "second", committed_at)).unwrap();
+
+        assert_eq!(database.commit_count().unwrap(), 2);
+    }
+
+    #[test]
+    fn oldest_commit_date_returns_none_for_empty_database() {
+        let database = Database::open_in_memory().unwrap();
+
+        assert_eq!(database.oldest_commit_date().unwrap(), None);
+    }
+
+    #[test]
+    fn oldest_commit_date_returns_earliest_committed_at() {
+        let database = Database::open_in_memory().unwrap();
+        let today = Local::now().date_naive();
+        let yesterday = today - Duration::days(1);
+        let earlier = local_datetime_to_utc(yesterday, 8, 0);
+        let later = local_datetime_to_utc(today, 14, 0);
+
+        database.insert_commit(&build_commit("aaa1111", "older", earlier)).unwrap();
+        database.insert_commit(&build_commit("bbb2222", "newer", later)).unwrap();
+
+        let oldest = database.oldest_commit_date().unwrap().unwrap();
+        assert_eq!(oldest, earlier.to_rfc3339());
+    }
+
+    #[test]
     fn local_day_bounds_convert_to_utc_range() {
         let timezone = FixedOffset::east_opt(2 * 60 * 60).unwrap();
         let date = NaiveDate::from_ymd_opt(2026, 3, 10).unwrap();

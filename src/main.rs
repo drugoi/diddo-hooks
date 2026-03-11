@@ -219,7 +219,9 @@ fn format_file_size(bytes: u64) -> String {
     const MB: u64 = 1024 * KB;
     const GB: u64 = 1024 * MB;
 
-    if bytes >= GB {
+    if bytes == 0 {
+        "0 bytes".to_string()
+    } else if bytes >= GB {
         format!("{:.2} GB", bytes as f64 / GB as f64)
     } else if bytes >= MB {
         format!("{:.2} MB", bytes as f64 / MB as f64)
@@ -232,13 +234,14 @@ fn run_metadata_command() -> Result<(), Box<dyn Error>> {
     let paths = paths::AppPaths::new()?;
     let database = db::Database::open(&paths.db_path)?;
 
-    let size_bytes = std::fs::metadata(&paths.db_path)
-        .map(|m| m.len())
-        .unwrap_or(0);
+    let size_bytes = std::fs::metadata(&paths.db_path)?.len();
     let count = database.commit_count()?;
-    let oldest = database
-        .oldest_commit_date()?
-        .unwrap_or_else(|| "-".to_string());
+    let oldest = match database.oldest_commit_date()? {
+        Some(raw) => chrono::DateTime::parse_from_rfc3339(&raw)
+            .map(|dt| dt.with_timezone(&Local).format("%Y-%m-%d %H:%M:%S").to_string())
+            .unwrap_or(raw),
+        None => "-".to_string(),
+    };
 
     println!("Database size:   {}", format_file_size(size_bytes));
     println!("Total commits:   {count}");
@@ -700,8 +703,8 @@ mod tests {
     use super::{
         AiSummaryAttempt, Commands, OutputFormat, ParsedCli, SummaryArgs, SummaryPeriod,
         build_summary_data, compute_cache_key, format_commit_time, format_config_paths,
-        output_format, parse_cli, render_empty_summary, render_summary_output, resolve_summary_window,
-        should_try_ai_summary, summary_request_from_cli, try_ai_summary,
+        format_file_size, output_format, parse_cli, render_empty_summary, render_summary_output,
+        resolve_summary_window, should_try_ai_summary, summary_request_from_cli, try_ai_summary,
     };
     use crate::{
         ai::{AiError, AiProvider},
@@ -1287,5 +1290,16 @@ mod tests {
         assert!(rendered.output.contains("a1  feat: update repo-a"));
         assert!(rendered.output.contains("Bob summary."));
         assert!(rendered.warning.as_deref().unwrap().contains("AI failed for first profile"));
+    }
+
+    #[test]
+    fn formats_file_size_in_bytes_kb_mb_gb() {
+        assert_eq!(format_file_size(0), "0 bytes");
+        assert_eq!(format_file_size(1), "0.00 KB");
+        assert_eq!(format_file_size(512 * 1024), "512.00 KB");
+        assert_eq!(format_file_size(1024 * 1024), "1.00 MB");
+        assert_eq!(format_file_size(50 * 1024 * 1024), "50.00 MB");
+        assert_eq!(format_file_size(1024 * 1024 * 1024), "1.00 GB");
+        assert_eq!(format_file_size(1536 * 1024 * 1024), "1.50 GB");
     }
 }
