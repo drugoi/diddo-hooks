@@ -609,8 +609,8 @@ mod tests {
     use serde_json::Value;
 
     use super::{
-        GlobalStats, SummaryData, render_json, render_markdown, render_markdown_by_profile,
-        render_terminal_to_string, render_terminal_to_string_by_profile, write_terminal,
+        render_json, render_markdown, render_markdown_by_profile, render_terminal_to_string,
+        render_terminal_to_string_by_profile, write_terminal, GlobalStats, SummaryData,
     };
     use crate::db::Commit;
     use crate::summary_group::{ProfileGroup, RepoGroup};
@@ -835,10 +835,13 @@ mod tests {
     }
 
     #[test]
-    fn terminal_table_body_contains_repo_rows_and_total() {
+    fn terminal_table_body_can_be_embedded_after_summary_text() {
         let commits = sample_summary(None).commits;
         let rendered = super::render_terminal_table_body(&commits);
 
+        let embedded = format!("AI summary here.\n\n{rendered}");
+
+        assert!(embedded.starts_with("AI summary here.\n\nrepository"));
         assert!(rendered.contains("repository"));
         assert!(rendered.contains("commits"));
         assert!(rendered.contains("percentage"));
@@ -846,8 +849,8 @@ mod tests {
         assert!(rendered.contains("api-service"));
         assert!(rendered.contains("Total"));
         assert!(rendered.contains("100.0%"));
-        // Should NOT contain a date label — that's the caller's job
         assert!(!rendered.contains("2026"));
+        assert!(!rendered.contains("AI summary here."));
     }
 
     #[test]

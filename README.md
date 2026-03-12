@@ -176,7 +176,7 @@ Current CLI behavior:
 - `--table` is mutually exclusive with `--md`, `--json`, and `--raw`
 - `--raw` skips AI and shows grouped commit data without the activity table
 - `--table` skips AI and shows only the repository activity table
-- Default terminal and `--md` summaries include the repository activity table after the AI summary
+- Default terminal and `--md` summaries include the repository activity table after the AI summary (or raw fallback)
 - `--md` and `--json` still try AI first unless you also use `--raw`
 - If no commits are recorded for the selected period, `diddo` prints an empty-period message instead of failing
 

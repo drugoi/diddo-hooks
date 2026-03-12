@@ -500,9 +500,9 @@ mod tests {
     };
 
     use super::{
-        HookPathState, STATE_FILE, build_forwarding_hook_script, build_post_commit_script,
-        install_with, path_for_script, resolve_diddo_executable, resolve_hooks_path_for_comparison,
-        uninstall_with,
+        build_forwarding_hook_script, build_post_commit_script, install_with, path_for_script,
+        resolve_diddo_executable, resolve_hooks_path_for_comparison, uninstall_with, HookPathState,
+        STATE_FILE,
     };
     use crate::paths::AppPaths;
 
@@ -705,11 +705,9 @@ mod tests {
             build_post_commit_script(Some(&previous_hooks_path))
         );
         assert!(generated_pre_commit.exists());
-        assert!(
-            fs::read_to_string(&generated_pre_commit)
-                .unwrap()
-                .contains("previous_hook_name='pre-commit'")
-        );
+        assert!(fs::read_to_string(&generated_pre_commit)
+            .unwrap()
+            .contains("previous_hook_name='pre-commit'"));
         assert_eq!(
             fs::read_to_string(state_file).unwrap(),
             format!("{previous_hooks_path}\n")
@@ -738,16 +736,12 @@ mod tests {
             fs::read_to_string(managed_hooks_dir.join(STATE_FILE)).unwrap(),
             ".githooks\n"
         );
-        assert!(
-            fs::read_to_string(managed_hooks_dir.join("pre-commit"))
-                .unwrap()
-                .contains("previous_hooks_path='.githooks'")
-        );
-        assert!(
-            fs::read_to_string(managed_hooks_dir.join("post-commit"))
-                .unwrap()
-                .contains("previous_hook_path=\"$PWD/$previous_hooks_path/$previous_hook_name\"")
-        );
+        assert!(fs::read_to_string(managed_hooks_dir.join("pre-commit"))
+            .unwrap()
+            .contains("previous_hooks_path='.githooks'"));
+        assert!(fs::read_to_string(managed_hooks_dir.join("post-commit"))
+            .unwrap()
+            .contains("previous_hook_path=\"$PWD/$previous_hooks_path/$previous_hook_name\""));
     }
 
     #[test]

@@ -175,7 +175,7 @@ pub fn run(assume_yes: bool) -> Result<(), Box<dyn Error>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{InstallType, install_type_from_path, is_newer, release_target};
+    use super::{install_type_from_path, is_newer, release_target, InstallType};
     use std::path::Path;
 
     #[test]

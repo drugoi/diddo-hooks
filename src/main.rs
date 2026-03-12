@@ -27,8 +27,6 @@ use std::{
 struct HelpCli {
     #[command(subcommand)]
     command: Option<Commands>,
-    #[command(flatten)]
-    summary: SummaryArgs,
 }
 
 #[derive(Parser, Debug)]
@@ -162,15 +160,33 @@ where
 {
     let args: Vec<OsString> = args.into_iter().map(Into::into).collect();
     let second = args.get(1).and_then(|arg| arg.to_str());
+    let only_option_args = args
+        .iter()
+        .skip(1)
+        .all(|arg| arg.to_str().is_some_and(|s| s.starts_with('-')));
 
     if matches!(second, Some("-h" | "--help" | "-V" | "--version")) {
         return HelpCli::try_parse_from(args).map(|cli| ParsedCli {
             command: cli.command,
+            summary: SummaryArgs::default(),
+        });
+    }
+
+    if second.is_none() {
+        return TodayCli::try_parse_from(args).map(|cli| ParsedCli {
+            command: None,
             summary: cli.summary,
         });
     }
 
-    if second.is_none() || second.is_some_and(|arg| arg.starts_with('-')) {
+    if only_option_args {
+        return Ok(ParsedCli {
+            command: None,
+            summary: SummaryArgs::default(),
+        });
+    }
+
+    if second.is_some_and(|arg| arg.starts_with('-')) {
         return TodayCli::try_parse_from(args).map(|cli| ParsedCli {
             command: None,
             summary: cli.summary,
@@ -801,11 +817,11 @@ mod tests {
     use chrono::{NaiveDate, TimeZone, Utc};
 
     use super::{
-        AiSummaryAttempt, Commands, OutputFormat, ParsedCli, SummaryArgs, SummaryPeriod,
         build_summary_data, compute_cache_key, format_commit_time, format_config_paths,
         format_file_size, format_metadata, output_format, parse_cli, render_empty_summary,
         render_summary_output, resolve_summary_window, should_try_ai_summary,
-        summary_request_from_cli, try_ai_summary,
+        summary_request_from_cli, try_ai_summary, AiSummaryAttempt, Commands, OutputFormat,
+        ParsedCli, SummaryArgs, SummaryPeriod,
     };
     use crate::{
         ai::{AiError, AiProvider},
@@ -894,32 +910,85 @@ mod tests {
     }
 
     #[test]
-    fn parses_one_summary_output_flag_for_today_and_subcommands() {
-        let today = parse_cli(["diddo", "--md"]).unwrap();
-        let explicit_today = parse_cli(["diddo", "today", "--raw"]).unwrap();
-        let yesterday = parse_cli(["diddo", "yesterday", "--json"]).unwrap();
-        let week = parse_cli(["diddo", "week", "--raw"]).unwrap();
+    fn parses_top_level_table_flag_as_default_summary_args() {
+        let cli = parse_cli(["diddo", "--table"]).unwrap();
 
         assert_eq!(
-            today,
+            cli,
             ParsedCli {
                 command: None,
-                summary: SummaryArgs {
-                    md: true,
-                    raw: false,
-                    json: false,
-                    table: false,
-                    no_cache: false,
-                },
+                summary: SummaryArgs::default(),
             }
         );
+    }
+
+    #[test]
+    fn parses_top_level_json_flag_as_default_summary_args() {
+        let cli = parse_cli(["diddo", "--json"]).unwrap();
+
         assert_eq!(
-            explicit_today.command,
+            cli,
+            ParsedCli {
+                command: None,
+                summary: SummaryArgs::default(),
+            }
+        );
+    }
+
+    #[test]
+    fn parses_top_level_md_flag_as_default_summary_args() {
+        let cli = parse_cli(["diddo", "--md"]).unwrap();
+
+        assert_eq!(
+            cli,
+            ParsedCli {
+                command: None,
+                summary: SummaryArgs::default(),
+            }
+        );
+    }
+
+    #[test]
+    fn parses_top_level_raw_flag_as_default_summary_args() {
+        let cli = parse_cli(["diddo", "--raw"]).unwrap();
+
+        assert_eq!(
+            cli,
+            ParsedCli {
+                command: None,
+                summary: SummaryArgs::default(),
+            }
+        );
+    }
+
+    #[test]
+    fn parses_top_level_no_cache_flag_as_default_summary_args() {
+        let cli = parse_cli(["diddo", "--no-cache"]).unwrap();
+
+        assert_eq!(
+            cli,
+            ParsedCli {
+                command: None,
+                summary: SummaryArgs::default(),
+            }
+        );
+    }
+
+    #[test]
+    fn parses_subcommand_output_flags_without_changing_behavior() {
+        let today = parse_cli(["diddo", "today", "--table"]).unwrap();
+        let yesterday = parse_cli(["diddo", "yesterday", "--json"]).unwrap();
+        let week = parse_cli(["diddo", "week", "--raw"]).unwrap();
+        let standup = parse_cli(["diddo", "standup", "--md"]).unwrap();
+        let today_no_cache = parse_cli(["diddo", "today", "--no-cache"]).unwrap();
+
+        assert_eq!(
+            today.command,
             Some(Commands::Today(super::SummaryArgs {
                 md: false,
-                raw: true,
+                raw: false,
                 json: false,
-                table: false,
+                table: true,
                 no_cache: false,
             }))
         );
@@ -943,25 +1012,26 @@ mod tests {
                 no_cache: false,
             }))
         );
-    }
-
-    #[test]
-    fn parses_table_output_flag_for_default_and_subcommands() {
-        let default_today = parse_cli(["diddo", "--table"]).unwrap();
-        let explicit_today = parse_cli(["diddo", "today", "--table"]).unwrap();
-        let yesterday = parse_cli(["diddo", "yesterday", "--table"]).unwrap();
-        let week = parse_cli(["diddo", "week", "--table"]).unwrap();
-        let standup = parse_cli(["diddo", "standup", "--table"]).unwrap();
-
-        assert!(format!("{default_today:?}").contains("table: true"));
-        assert!(matches!(explicit_today.command, Some(Commands::Today(_))));
-        assert!(format!("{explicit_today:?}").contains("table: true"));
-        assert!(matches!(yesterday.command, Some(Commands::Yesterday(_))));
-        assert!(format!("{yesterday:?}").contains("table: true"));
-        assert!(matches!(week.command, Some(Commands::Week(_))));
-        assert!(format!("{week:?}").contains("table: true"));
-        assert!(matches!(standup.command, Some(Commands::Standup(_))));
-        assert!(format!("{standup:?}").contains("table: true"));
+        assert_eq!(
+            standup.command,
+            Some(Commands::Standup(super::SummaryArgs {
+                md: true,
+                raw: false,
+                json: false,
+                table: false,
+                no_cache: false,
+            }))
+        );
+        assert_eq!(
+            today_no_cache.command,
+            Some(Commands::Today(super::SummaryArgs {
+                md: false,
+                raw: false,
+                json: false,
+                table: false,
+                no_cache: true,
+            }))
+        );
     }
 
     #[test]
@@ -993,14 +1063,14 @@ mod tests {
 
     #[test]
     fn rejects_conflicting_summary_output_flags() {
-        let error = parse_cli(["diddo", "--md", "--json"]).unwrap_err();
+        let error = parse_cli(["diddo", "today", "--md", "--json"]).unwrap_err();
 
         assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
     }
 
     #[test]
     fn rejects_table_with_other_summary_output_flags() {
-        let error = parse_cli(["diddo", "--table", "--json"]).unwrap_err();
+        let error = parse_cli(["diddo", "today", "--table", "--json"]).unwrap_err();
 
         assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
     }
@@ -1093,7 +1163,7 @@ mod tests {
     #[test]
     fn table_output_skips_ai_summary() {
         let (_, summary_args) =
-            summary_request_from_cli(parse_cli(["diddo", "--table"]).unwrap()).unwrap();
+            summary_request_from_cli(parse_cli(["diddo", "today", "--table"]).unwrap()).unwrap();
 
         assert!(!should_try_ai_summary(summary_args));
         assert_eq!(format!("{:?}", output_format(summary_args)), "Table");
@@ -1328,11 +1398,9 @@ mod tests {
         .unwrap();
 
         assert_eq!(rendered.warning, None);
-        assert!(
-            rendered
-                .output
-                .contains("\"date_label\": \"2026-03-10 (today)\"")
-        );
+        assert!(rendered
+            .output
+            .contains("\"date_label\": \"2026-03-10 (today)\""));
         assert!(rendered.output.contains("\"projects\": []"));
         assert!(rendered.output.contains("\"ai_summary\": null"));
         assert!(!rendered.output.contains("\"message\""));
@@ -1498,13 +1566,11 @@ mod tests {
         assert!(rendered.output.contains("repo-a (1 commit)"));
         assert!(rendered.output.contains("a1  feat: update repo-a"));
         assert!(rendered.output.contains("Bob summary."));
-        assert!(
-            rendered
-                .warning
-                .as_deref()
-                .unwrap()
-                .contains("AI failed for first profile")
-        );
+        assert!(rendered
+            .warning
+            .as_deref()
+            .unwrap()
+            .contains("AI failed for first profile"));
     }
 
     #[test]
@@ -1637,11 +1703,9 @@ mod tests {
         )
         .unwrap();
 
-        assert!(
-            rendered
-                .output
-                .contains("No commits recorded for last 24 hours (standup)")
-        );
+        assert!(rendered
+            .output
+            .contains("No commits recorded for last 24 hours (standup)"));
         assert_eq!(rendered.warning, None);
     }
 
@@ -1698,11 +1762,9 @@ mod tests {
         )
         .unwrap();
 
-        assert!(
-            rendered
-                .output
-                .contains("\"date_label\": \"last 24 hours (standup)\"")
-        );
+        assert!(rendered
+            .output
+            .contains("\"date_label\": \"last 24 hours (standup)\""));
     }
 
     #[test]
@@ -1717,7 +1779,7 @@ mod tests {
             NaiveDate::from_ymd_opt(2026, 3, 10).unwrap(),
         );
         let (_, summary_args) =
-            summary_request_from_cli(parse_cli(["diddo", "--table"]).unwrap()).unwrap();
+            summary_request_from_cli(parse_cli(["diddo", "today", "--table"]).unwrap()).unwrap();
         let database = crate::db::Database::open_in_memory().unwrap();
         let rendered = render_summary_output(
             &database,
@@ -1872,21 +1934,15 @@ mod tests {
     fn date_based_windows_have_no_exact_bounds() {
         let today = NaiveDate::from_ymd_opt(2026, 3, 12).unwrap();
 
-        assert!(
-            resolve_summary_window(SummaryPeriod::Today, today)
-                .exact_bounds
-                .is_none()
-        );
-        assert!(
-            resolve_summary_window(SummaryPeriod::Yesterday, today)
-                .exact_bounds
-                .is_none()
-        );
-        assert!(
-            resolve_summary_window(SummaryPeriod::Week, today)
-                .exact_bounds
-                .is_none()
-        );
+        assert!(resolve_summary_window(SummaryPeriod::Today, today)
+            .exact_bounds
+            .is_none());
+        assert!(resolve_summary_window(SummaryPeriod::Yesterday, today)
+            .exact_bounds
+            .is_none());
+        assert!(resolve_summary_window(SummaryPeriod::Week, today)
+            .exact_bounds
+            .is_none());
     }
 
     #[test]
