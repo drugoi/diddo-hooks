@@ -1,0 +1,28 @@
+src/main.rs
+  031f54c950956fba 10,77-83,104-105,207,279-282,330
+src/update.rs
+  031f54c950956fba 1-7
+Cargo.toml
+  031f54c950956fba 25-26
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.8",
+  "base_commit_sha": "c8a2c0e25bc77768a476c870da18f39202194243",
+  "prompts": {
+    "031f54c950956fba": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "549db5dd-d1db-426c-8636-6cb6f8e889ce",
+        "model": "default"
+      },
+      "human_author": "Nikita Bayev <nikita@bayev.kz>",
+      "messages": [],
+      "total_additions": 25,
+      "total_deletions": 1,
+      "accepted_lines": 25,
+      "overriden_lines": 0,
+      "messages_url": "https://usegitai.com/cas/35f575aee194611aaf3a073dd4796898e8eb816f00f22a9087dbcee9049dbbf7"
+    }
+  }
+}
