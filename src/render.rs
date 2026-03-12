@@ -59,6 +59,7 @@ pub fn render_markdown(data: &SummaryData) -> String {
     if !data.commits.is_empty() {
         output.push('\n');
         output.push_str(&render_markdown_table(&data.commits));
+        output.push('\n');
     }
 
     output

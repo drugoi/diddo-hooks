@@ -186,13 +186,6 @@ where
         });
     }
 
-    if second.is_some_and(|arg| arg.starts_with('-')) {
-        return TodayCli::try_parse_from(args).map(|cli| ParsedCli {
-            command: None,
-            summary: cli.summary,
-        });
-    }
-
     CommandCli::try_parse_from(args).map(|cli| ParsedCli {
         command: cli.command,
         summary: SummaryArgs::default(),
@@ -910,7 +903,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_top_level_table_flag_as_default_summary_args() {
+    fn bare_top_level_table_flag_is_treated_as_interactive_invocation() {
         let cli = parse_cli(["diddo", "--table"]).unwrap();
 
         assert_eq!(
@@ -923,7 +916,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_top_level_json_flag_as_default_summary_args() {
+    fn bare_top_level_json_flag_is_treated_as_interactive_invocation() {
         let cli = parse_cli(["diddo", "--json"]).unwrap();
 
         assert_eq!(
@@ -936,7 +929,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_top_level_md_flag_as_default_summary_args() {
+    fn bare_top_level_md_flag_is_treated_as_interactive_invocation() {
         let cli = parse_cli(["diddo", "--md"]).unwrap();
 
         assert_eq!(
@@ -949,7 +942,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_top_level_raw_flag_as_default_summary_args() {
+    fn bare_top_level_raw_flag_is_treated_as_interactive_invocation() {
         let cli = parse_cli(["diddo", "--raw"]).unwrap();
 
         assert_eq!(
@@ -962,7 +955,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_top_level_no_cache_flag_as_default_summary_args() {
+    fn bare_top_level_no_cache_flag_is_treated_as_interactive_invocation() {
         let cli = parse_cli(["diddo", "--no-cache"]).unwrap();
 
         assert_eq!(
