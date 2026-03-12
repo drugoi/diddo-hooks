@@ -146,7 +146,7 @@ pub fn run(assume_yes: bool) -> Result<(), Box<dyn Error>> {
     let target = match target {
         Some(t) => t,
         None => {
-            return Err("No release available for your platform.".into());
+            return Err("No release available for your platform (unsupported target).".into());
         }
     };
     let result = self_update::backends::github::Update::configure()
