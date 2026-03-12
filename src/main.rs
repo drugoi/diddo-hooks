@@ -7,6 +7,7 @@ mod interactive;
 mod paths;
 mod render;
 mod summary_group;
+mod update;
 
 use clap::{ArgGroup, Args, Parser, Subcommand};
 use chrono::{DateTime, Datelike, Duration, Local, NaiveDate, Utc};
@@ -73,6 +74,13 @@ struct SummaryArgs {
     no_cache: bool,
 }
 
+#[derive(Args, Debug, Clone, Copy, PartialEq, Eq)]
+struct UpdateArgs {
+    /// Apply update without prompting.
+    #[arg(long, alias = "assume-yes")]
+    yes: bool,
+}
+
 #[derive(Subcommand, Debug, Clone, Copy, PartialEq, Eq)]
 enum Commands {
     /// Show today's summary.
@@ -93,6 +101,8 @@ enum Commands {
     Config,
     /// Show database metadata.
     Metadata,
+    /// Update diddo to the latest release.
+    Update(UpdateArgs),
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -194,6 +204,7 @@ fn run_cli(cli: ParsedCli) {
         Some(Commands::Hook) => run_hook_command(),
         Some(Commands::Config) => run_config_command(),
         Some(Commands::Metadata) => run_metadata_command(),
+        Some(Commands::Update(args)) => run_update_command(args),
         _ => run_summary_command(cli),
     };
 
@@ -265,6 +276,10 @@ fn run_metadata_command() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+fn run_update_command(args: UpdateArgs) -> Result<(), Box<dyn Error>> {
+    update::run(args.yes)
+}
+
 fn format_metadata(database: &db::Database, size_bytes: u64) -> Result<String, Box<dyn Error>> {
     let count = database.commit_count()?;
     let oldest = match database.oldest_commit_date()? {
@@ -312,7 +327,7 @@ fn summary_request_from_cli(cli: ParsedCli) -> Option<(SummaryPeriod, SummaryArg
         Some(Commands::Yesterday(summary)) => Some((SummaryPeriod::Yesterday, summary)),
         Some(Commands::Week(summary)) => Some((SummaryPeriod::Week, summary)),
         Some(Commands::Standup(summary)) => Some((SummaryPeriod::Standup, summary)),
-        Some(Commands::Init | Commands::Uninstall | Commands::Hook | Commands::Config | Commands::Metadata) => None,
+        Some(Commands::Init | Commands::Uninstall | Commands::Hook | Commands::Config | Commands::Metadata | Commands::Update(_)) => None,
     }
 }
 
