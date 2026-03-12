@@ -1,0 +1,24 @@
+docs/plans/2026-03-12-update-command-design.md
+  031f54c950956fba 1-100
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.8",
+  "base_commit_sha": "121a2c4b0016d0147e12d09a3954948067b66689",
+  "prompts": {
+    "031f54c950956fba": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "549db5dd-d1db-426c-8636-6cb6f8e889ce",
+        "model": "default"
+      },
+      "human_author": "Nikita Bayev <nikita@bayev.kz>",
+      "messages": [],
+      "total_additions": 100,
+      "total_deletions": 0,
+      "accepted_lines": 100,
+      "overriden_lines": 0,
+      "messages_url": "https://usegitai.com/cas/9bb021d5a633cb77c7354ffe204c27a334692f7d4101b9d2a8c2ead4b11c2da1"
+    }
+  }
+}
