@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 use std::cmp::Reverse;
+use std::collections::BTreeMap;
 use std::io::{self, Write};
 
 use crate::db::Commit;
@@ -177,6 +178,63 @@ pub fn render_json_by_profile(
     .unwrap_or_else(|_| "{}".to_string())
 }
 
+pub fn render_table(commits: &[Commit], date_label: &str) -> String {
+    let rows = repo_table_rows(commits);
+    let total_commits = commits.len();
+    let total_percentage = "100.0%";
+    let repository_width = rows
+        .iter()
+        .map(|row| row.repository.len())
+        .max()
+        .unwrap_or(0)
+        .max("repository".len())
+        .max("Total".len());
+    let commits_width = rows
+        .iter()
+        .map(|row| row.commit_count.to_string().len())
+        .max()
+        .unwrap_or(0)
+        .max("commits".len())
+        .max(total_commits.to_string().len());
+    let percentage_width = rows
+        .iter()
+        .map(|row| row.percentage.len())
+        .max()
+        .unwrap_or(0)
+        .max("percentage".len())
+        .max(total_percentage.len());
+    let separator = format!(
+        "{:-<repository_width$}  {:-<commits_width$}  {:-<percentage_width$}",
+        "", "", ""
+    );
+
+    let mut output = String::new();
+    output.push('\n');
+    output.push_str(date_label);
+    output.push_str("\n\n");
+    output.push_str(&format!(
+        "{:<repository_width$}  {:>commits_width$}  {:>percentage_width$}\n",
+        "repository", "commits", "percentage"
+    ));
+    output.push_str(&separator);
+    output.push('\n');
+
+    for row in rows {
+        output.push_str(&format!(
+            "{:<repository_width$}  {:>commits_width$}  {:>percentage_width$}\n",
+            row.repository, row.commit_count, row.percentage
+        ));
+    }
+
+    output.push_str(&separator);
+    output.push('\n');
+    output.push_str(&format!(
+        "{:<repository_width$}  {:>commits_width$}  {:>percentage_width$}\n",
+        "Total", total_commits, total_percentage
+    ));
+    output
+}
+
 fn write_terminal_by_profile<W: Write>(
     writer: &mut W,
     sections: &[ProfileGroup],
@@ -327,6 +385,46 @@ struct ProjectGroup<'a> {
     commits: Vec<&'a Commit>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RepoTableRow {
+    repository: String,
+    commit_count: usize,
+    percentage: String,
+}
+
+fn repo_table_rows(commits: &[Commit]) -> Vec<RepoTableRow> {
+    let project_groups = grouped_commits(commits);
+    let total_commits = commits.len();
+    let mut repo_name_counts = BTreeMap::new();
+
+    for project in &project_groups {
+        *repo_name_counts.entry(project.repo_name).or_insert(0usize) += 1;
+    }
+
+    project_groups
+        .into_iter()
+        .map(|project| {
+            let repository = if repo_name_counts
+                .get(project.repo_name)
+                .copied()
+                .unwrap_or(0)
+                > 1
+            {
+                format!("{} ({})", project.repo_name, project.repo_path)
+            } else {
+                project.repo_name.to_string()
+            };
+            let commit_count = project.commits.len();
+
+            RepoTableRow {
+                repository,
+                commit_count,
+                percentage: format!("{:.1}%", commit_count as f64 * 100.0 / total_commits as f64),
+            }
+        })
+        .collect()
+}
+
 fn grouped_commits(commits: &[Commit]) -> Vec<ProjectGroup<'_>> {
     let mut groups: Vec<ProjectGroup<'_>> = Vec::new();
 
@@ -423,8 +521,8 @@ mod tests {
     use serde_json::Value;
 
     use super::{
-        render_json, render_markdown, render_markdown_by_profile,
-        render_terminal_to_string_by_profile, GlobalStats, SummaryData, write_terminal,
+        GlobalStats, SummaryData, render_json, render_markdown, render_markdown_by_profile,
+        render_terminal_to_string_by_profile, write_terminal,
     };
     use crate::db::Commit;
     use crate::summary_group::{ProfileGroup, RepoGroup};
@@ -634,6 +732,33 @@ mod tests {
         assert!(md.contains("### proj (2 commits)"));
         assert!(md.contains("- `h1` first commit"));
         assert!(md.contains("- `h2` second commit"));
+    }
+
+    #[test]
+    fn table_renders_sorted_repo_counts_percentages_and_total_row() {
+        let rendered = super::render_table(&sample_summary(None).commits, "2026-03-10 (today)");
+
+        assert!(rendered.contains("2026-03-10 (today)"));
+        assert!(rendered.contains("repository"));
+        assert!(rendered.contains("commits"));
+        assert!(rendered.contains("percentage"));
+        let diddo_index = rendered.find("diddo").unwrap();
+        let api_service_index = rendered.find("api-service").unwrap();
+        let total_index = rendered.find("Total").unwrap();
+        assert!(diddo_index < api_service_index);
+        assert!(api_service_index < total_index);
+        assert!(rendered.contains("66.7%"));
+        assert!(rendered.contains("33.3%"));
+        assert!(rendered.contains("100.0%"));
+    }
+
+    #[test]
+    fn table_breaks_ties_by_repo_name() {
+        let rendered = super::render_table(&tied_summary(None).commits, "2026-03-10 (today)");
+
+        let alpha_index = rendered.find("alpha-app").unwrap();
+        let zebra_index = rendered.find("zebra-app").unwrap();
+        assert!(alpha_index < zebra_index);
     }
 
     fn sample_summary(ai_summary: Option<&str>) -> SummaryData {

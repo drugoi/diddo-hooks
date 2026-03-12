@@ -9,11 +9,14 @@ mod render;
 mod summary_group;
 mod update;
 
-use clap::{ArgGroup, Args, Parser, Subcommand};
 use chrono::{DateTime, Datelike, Duration, Local, NaiveDate, Utc};
+use clap::{ArgGroup, Args, Parser, Subcommand};
 use indicatif::{ProgressBar, ProgressStyle};
 use sha2::{Digest, Sha256};
-use std::{cmp::Reverse, collections::BTreeMap, error::Error, ffi::OsString, io::IsTerminal, time::Duration as StdDuration};
+use std::{
+    cmp::Reverse, collections::BTreeMap, error::Error, ffi::OsString, io::IsTerminal,
+    time::Duration as StdDuration,
+};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -53,7 +56,7 @@ struct TodayCli {
 #[derive(Args, Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[command(group(
     ArgGroup::new("output")
-        .args(["md", "raw", "json"])
+        .args(["md", "raw", "json", "table"])
         .multiple(false)
 ))]
 struct SummaryArgs {
@@ -68,6 +71,10 @@ struct SummaryArgs {
     /// Output as JSON.
     #[arg(long)]
     json: bool,
+
+    /// Output repository activity as a table.
+    #[arg(long)]
+    table: bool,
 
     /// Skip cache and force a fresh AI summary.
     #[arg(long)]
@@ -124,6 +131,7 @@ enum OutputFormat {
     Terminal,
     Markdown,
     Json,
+    Table,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -284,7 +292,11 @@ fn format_metadata(database: &db::Database, size_bytes: u64) -> Result<String, B
     let count = database.commit_count()?;
     let oldest = match database.oldest_commit_date()? {
         Some(raw) => chrono::DateTime::parse_from_rfc3339(&raw)
-            .map(|dt| dt.with_timezone(&Local).format("%Y-%m-%d %H:%M:%S").to_string())
+            .map(|dt| {
+                dt.with_timezone(&Local)
+                    .format("%Y-%m-%d %H:%M:%S")
+                    .to_string()
+            })
             .unwrap_or(raw),
         None => "-".to_string(),
     };
@@ -327,7 +339,14 @@ fn summary_request_from_cli(cli: ParsedCli) -> Option<(SummaryPeriod, SummaryArg
         Some(Commands::Yesterday(summary)) => Some((SummaryPeriod::Yesterday, summary)),
         Some(Commands::Week(summary)) => Some((SummaryPeriod::Week, summary)),
         Some(Commands::Standup(summary)) => Some((SummaryPeriod::Standup, summary)),
-        Some(Commands::Init | Commands::Uninstall | Commands::Hook | Commands::Config | Commands::Metadata | Commands::Update(_)) => None,
+        Some(
+            Commands::Init
+            | Commands::Uninstall
+            | Commands::Hook
+            | Commands::Config
+            | Commands::Metadata
+            | Commands::Update(_),
+        ) => None,
     }
 }
 
@@ -390,7 +409,7 @@ fn load_commits_for_window(
 }
 
 fn should_try_ai_summary(summary_args: SummaryArgs) -> bool {
-    !summary_args.raw
+    !summary_args.raw && !summary_args.table
 }
 
 fn compute_cache_key(
@@ -418,6 +437,8 @@ fn output_format(summary_args: SummaryArgs) -> OutputFormat {
         OutputFormat::Markdown
     } else if summary_args.json {
         OutputFormat::Json
+    } else if summary_args.table {
+        OutputFormat::Table
     } else {
         OutputFormat::Terminal
     }
@@ -486,6 +507,15 @@ where
         });
     }
 
+    let format = output_format(summary_args);
+
+    if matches!(format, OutputFormat::Table) {
+        return Ok(RenderedSummary {
+            output: render::render_table(&commits, &window.date_label),
+            warning: None,
+        });
+    }
+
     let mut groups = summary_group::group_commits_by_profile_then_repo(&commits);
     let period = window.ai_period;
 
@@ -497,26 +527,21 @@ where
             Ok(p) => p,
             Err(error) => {
                 let global_stats = build_global_stats(&commits);
-                let output = match output_format(summary_args) {
-                    OutputFormat::Terminal => {
-                        render::render_terminal_to_string_by_profile(
-                            &groups,
-                            &window.date_label,
-                            &global_stats,
-                        )
-                    }
-                    OutputFormat::Markdown => {
-                        render::render_markdown_by_profile(
-                            &groups,
-                            &window.date_label,
-                            &global_stats,
-                        )
-                    }
-                    OutputFormat::Json => render::render_json_by_profile(
+                let output = match format {
+                    OutputFormat::Terminal => render::render_terminal_to_string_by_profile(
                         &groups,
                         &window.date_label,
                         &global_stats,
                     ),
+                    OutputFormat::Markdown => render::render_markdown_by_profile(
+                        &groups,
+                        &window.date_label,
+                        &global_stats,
+                    ),
+                    OutputFormat::Json => {
+                        render::render_json_by_profile(&groups, &window.date_label, &global_stats)
+                    }
+                    OutputFormat::Table => unreachable!("table mode returns early"),
                 };
                 return Ok(RenderedSummary {
                     output,
@@ -636,24 +661,20 @@ where
     };
 
     let global_stats = build_global_stats(&commits);
-    let output = match output_format(summary_args) {
-        OutputFormat::Terminal => render::render_terminal_to_string_by_profile(
-            &groups,
-            &window.date_label,
-            &global_stats,
-        ),
+    let output = match format {
+        OutputFormat::Terminal => {
+            render::render_terminal_to_string_by_profile(&groups, &window.date_label, &global_stats)
+        }
         OutputFormat::Markdown => {
             render::render_markdown_by_profile(&groups, &window.date_label, &global_stats)
         }
         OutputFormat::Json => {
             render::render_json_by_profile(&groups, &window.date_label, &global_stats)
         }
+        OutputFormat::Table => unreachable!("table mode returns early"),
     };
 
-    Ok(RenderedSummary {
-        output,
-        warning,
-    })
+    Ok(RenderedSummary { output, warning })
 }
 
 fn build_global_stats(commits: &[db::Commit]) -> render::GlobalStats {
@@ -667,7 +688,9 @@ fn build_global_stats(commits: &[db::Commit]) -> render::GlobalStats {
         .into_iter()
         .map(|((repo_name, _repo_path), count)| (repo_name, count))
         .collect::<Vec<_>>();
-    ranked_projects.sort_by(|left, right| (Reverse(left.1), left.0.as_str()).cmp(&(Reverse(right.1), right.0.as_str())));
+    ranked_projects.sort_by(|left, right| {
+        (Reverse(left.1), left.0.as_str()).cmp(&(Reverse(right.1), right.0.as_str()))
+    });
 
     let first_commit = commits.iter().min_by_key(|c| c.committed_at);
     let last_commit = commits.iter().max_by_key(|c| c.committed_at);
@@ -754,6 +777,7 @@ fn render_empty_summary(date_label: &str, summary_args: SummaryArgs) -> String {
             None,
             Vec::new(),
         )),
+        OutputFormat::Table => message,
     }
 }
 
@@ -773,7 +797,7 @@ mod tests {
     };
     use crate::{
         ai::{AiError, AiProvider},
-        config::{AppConfig, AiConfig, AiCliConfig},
+        config::{AiCliConfig, AiConfig, AppConfig},
         paths::AppPaths,
     };
 
@@ -790,7 +814,13 @@ mod tests {
         assert_ne!(key1, key4);
         let key5 = compute_cache_key("openai", "gpt-4o-mini", "yesterday", "unknown", prompt);
         assert_ne!(key1, key5);
-        let key6 = compute_cache_key("openai", "gpt-4o-mini", "today", "unknown", "different prompt");
+        let key6 = compute_cache_key(
+            "openai",
+            "gpt-4o-mini",
+            "today",
+            "unknown",
+            "different prompt",
+        );
         assert_ne!(key1, key6);
         let key7 = compute_cache_key("openai", "gpt-4o-mini", "today", "test@example.com", prompt);
         assert_ne!(key1, key7);
@@ -815,14 +845,13 @@ mod tests {
         };
         let commits = vec![sample_commit("abc123", "diddo", "/tmp/diddo", 9, 15)];
         let period = "today";
-        let prompt = crate::ai::build_prompt(
-            &commits,
-            period,
-            config.ai.resolved_prompt_instructions(),
-        );
+        let prompt =
+            crate::ai::build_prompt(&commits, period, config.ai.resolved_prompt_instructions());
         let (provider_id, model_id) = crate::ai::primary_provider_identity(&config.ai).unwrap();
         let key = compute_cache_key(&provider_id, &model_id, period, "unknown", &prompt);
-        database.set_cached_summary(&key, "Pre-cached summary").unwrap();
+        database
+            .set_cached_summary(&key, "Pre-cached summary")
+            .unwrap();
 
         let window = resolve_summary_window(
             SummaryPeriod::Today,
@@ -834,12 +863,17 @@ mod tests {
                 md: false,
                 raw: false,
                 json: true,
+                table: false,
                 no_cache: false,
             },
             window,
             commits,
             || Ok(config.clone()),
-            |_| Ok(Box::new(FailingProvider("should not be called".to_string()))),
+            |_| {
+                Ok(Box::new(FailingProvider(
+                    "should not be called".to_string(),
+                )))
+            },
         )
         .unwrap();
 
@@ -862,6 +896,7 @@ mod tests {
                     md: true,
                     raw: false,
                     json: false,
+                    table: false,
                     no_cache: false,
                 },
             }
@@ -872,6 +907,7 @@ mod tests {
                 md: false,
                 raw: true,
                 json: false,
+                table: false,
                 no_cache: false,
             }))
         );
@@ -881,6 +917,7 @@ mod tests {
                 md: false,
                 raw: false,
                 json: true,
+                table: false,
                 no_cache: false,
             }))
         );
@@ -890,9 +927,29 @@ mod tests {
                 md: false,
                 raw: true,
                 json: false,
+                table: false,
                 no_cache: false,
             }))
         );
+    }
+
+    #[test]
+    fn parses_table_output_flag_for_default_and_subcommands() {
+        let default_today = parse_cli(["diddo", "--table"]).unwrap();
+        let explicit_today = parse_cli(["diddo", "today", "--table"]).unwrap();
+        let yesterday = parse_cli(["diddo", "yesterday", "--table"]).unwrap();
+        let week = parse_cli(["diddo", "week", "--table"]).unwrap();
+        let standup = parse_cli(["diddo", "standup", "--table"]).unwrap();
+
+        assert!(format!("{default_today:?}").contains("table: true"));
+        assert!(matches!(explicit_today.command, Some(Commands::Today(_))));
+        assert!(format!("{explicit_today:?}").contains("table: true"));
+        assert!(matches!(yesterday.command, Some(Commands::Yesterday(_))));
+        assert!(format!("{yesterday:?}").contains("table: true"));
+        assert!(matches!(week.command, Some(Commands::Week(_))));
+        assert!(format!("{week:?}").contains("table: true"));
+        assert!(matches!(standup.command, Some(Commands::Standup(_))));
+        assert!(format!("{standup:?}").contains("table: true"));
     }
 
     #[test]
@@ -925,6 +982,13 @@ mod tests {
     #[test]
     fn rejects_conflicting_summary_output_flags() {
         let error = parse_cli(["diddo", "--md", "--json"]).unwrap_err();
+
+        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn rejects_table_with_other_summary_output_flags() {
+        let error = parse_cli(["diddo", "--table", "--json"]).unwrap_err();
 
         assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
     }
@@ -968,6 +1032,7 @@ mod tests {
                     md: true,
                     raw: false,
                     json: false,
+                    table: false,
                     no_cache: false,
                 }
             ))
@@ -994,20 +1059,32 @@ mod tests {
             md: true,
             raw: false,
             json: false,
+            table: false,
             no_cache: false,
         }));
         assert!(should_try_ai_summary(SummaryArgs {
             md: false,
             raw: false,
             json: true,
+            table: false,
             no_cache: false,
         }));
         assert!(!should_try_ai_summary(SummaryArgs {
             md: false,
             raw: true,
             json: false,
+            table: false,
             no_cache: false,
         }));
+    }
+
+    #[test]
+    fn table_output_skips_ai_summary() {
+        let (_, summary_args) =
+            summary_request_from_cli(parse_cli(["diddo", "--table"]).unwrap()).unwrap();
+
+        assert!(!should_try_ai_summary(summary_args));
+        assert_eq!(format!("{:?}", output_format(summary_args)), "Table");
     }
 
     #[test]
@@ -1022,6 +1099,7 @@ mod tests {
                 md: false,
                 raw: false,
                 json: true,
+                table: false,
                 no_cache: false,
             }),
             |_config| Ok(Box::new(SuccessProvider("JSON summary".to_string()))),
@@ -1051,7 +1129,9 @@ mod tests {
         assert_eq!(attempt.summary, None);
         assert_eq!(
             attempt.warning.as_deref(),
-            Some("AI summary unavailable: no AI provider configured or detected. Falling back to raw output.")
+            Some(
+                "AI summary unavailable: no AI provider configured or detected. Falling back to raw output."
+            )
         );
     }
 
@@ -1076,12 +1156,16 @@ mod tests {
 
     #[test]
     fn maps_summary_flags_to_expected_output_formats() {
-        assert_eq!(output_format(SummaryArgs::default()), OutputFormat::Terminal);
+        assert_eq!(
+            output_format(SummaryArgs::default()),
+            OutputFormat::Terminal
+        );
         assert_eq!(
             output_format(SummaryArgs {
                 md: true,
                 raw: false,
                 json: false,
+                table: false,
                 no_cache: false,
             }),
             OutputFormat::Markdown
@@ -1091,6 +1175,7 @@ mod tests {
                 md: false,
                 raw: false,
                 json: true,
+                table: false,
                 no_cache: false,
             }),
             OutputFormat::Json
@@ -1105,17 +1190,19 @@ mod tests {
         let summary = build_summary_data(
             "2026-03-10 (today)".to_string(),
             Some("Shipped summary flow.".to_string()),
-            vec![
-                last_commit.clone(),
-                first_commit.clone(),
-                second_commit,
-            ],
+            vec![last_commit.clone(), first_commit.clone(), second_commit],
         );
 
         assert_eq!(summary.total_commits, 3);
         assert_eq!(summary.project_count, 2);
-        assert_eq!(summary.first_commit_time, format_commit_time(first_commit.committed_at));
-        assert_eq!(summary.last_commit_time, format_commit_time(last_commit.committed_at));
+        assert_eq!(
+            summary.first_commit_time,
+            format_commit_time(first_commit.committed_at)
+        );
+        assert_eq!(
+            summary.last_commit_time,
+            format_commit_time(last_commit.committed_at)
+        );
         assert_eq!(summary.most_active_project, "diddo");
         assert_eq!(summary.most_active_count, 2);
         assert_eq!(summary.ai_summary.as_deref(), Some("Shipped summary flow."));
@@ -1130,6 +1217,7 @@ mod tests {
                 md: true,
                 raw: false,
                 json: false,
+                table: false,
                 no_cache: false,
             },
         );
@@ -1139,8 +1227,15 @@ mod tests {
                 md: false,
                 raw: false,
                 json: true,
+                table: false,
                 no_cache: false,
             },
+        );
+        let table = render_empty_summary(
+            "2026-03-10 (today)",
+            summary_request_from_cli(parse_cli(["diddo", "--table"]).unwrap())
+                .unwrap()
+                .1,
         );
 
         assert_eq!(terminal, "No commits recorded for 2026-03-10 (today).");
@@ -1149,6 +1244,7 @@ mod tests {
             markdown,
             "# 2026-03-10 (today)\n\nNo commits recorded for 2026-03-10 (today).\n"
         );
+        assert_eq!(table, "No commits recorded for 2026-03-10 (today).");
         assert!(json.contains("\"date_label\": \"2026-03-10 (today)\""));
         assert!(json.contains("\"projects\": []"));
         assert!(json.contains("\"total_commits\": 0"));
@@ -1177,12 +1273,17 @@ mod tests {
                 md: false,
                 raw: false,
                 json: false,
+                table: false,
                 no_cache: false,
             },
             window,
             commits,
             || Ok(AppConfig::default()),
-            |_| Ok(Box::new(SuccessProvider("Summary for unknown profile.".to_string()))),
+            |_| {
+                Ok(Box::new(SuccessProvider(
+                    "Summary for unknown profile.".to_string(),
+                )))
+            },
         )
         .unwrap();
 
@@ -1204,6 +1305,7 @@ mod tests {
                 md: false,
                 raw: false,
                 json: true,
+                table: false,
                 no_cache: false,
             },
             window,
@@ -1214,7 +1316,11 @@ mod tests {
         .unwrap();
 
         assert_eq!(rendered.warning, None);
-        assert!(rendered.output.contains("\"date_label\": \"2026-03-10 (today)\""));
+        assert!(
+            rendered
+                .output
+                .contains("\"date_label\": \"2026-03-10 (today)\"")
+        );
         assert!(rendered.output.contains("\"projects\": []"));
         assert!(rendered.output.contains("\"ai_summary\": null"));
         assert!(!rendered.output.contains("\"message\""));
@@ -1334,7 +1440,14 @@ mod tests {
         }
     }
 
-    fn commit_with_author(hash: &str, repo_name: &str, repo_path: &str, hour: u32, minute: u32, author_email: Option<&str>) -> crate::db::Commit {
+    fn commit_with_author(
+        hash: &str,
+        repo_name: &str,
+        repo_path: &str,
+        hour: u32,
+        minute: u32,
+        author_email: Option<&str>,
+    ) -> crate::db::Commit {
         let mut c = sample_commit(hash, repo_name, repo_path, hour, minute);
         c.author_email = author_email.map(String::from);
         c
@@ -1351,16 +1464,14 @@ mod tests {
             NaiveDate::from_ymd_opt(2026, 3, 10).unwrap(),
         );
         let database = crate::db::Database::open_in_memory().unwrap();
-        let provider = FailFirstProvider::new(
-            "Bob summary.",
-            "AI failed for first profile",
-        );
+        let provider = FailFirstProvider::new("Bob summary.", "AI failed for first profile");
         let rendered = render_summary_output(
             &database,
             SummaryArgs {
                 md: false,
                 raw: false,
                 json: false,
+                table: false,
                 no_cache: false,
             },
             window,
@@ -1375,7 +1486,13 @@ mod tests {
         assert!(rendered.output.contains("repo-a (1 commit)"));
         assert!(rendered.output.contains("a1  feat: update repo-a"));
         assert!(rendered.output.contains("Bob summary."));
-        assert!(rendered.warning.as_deref().unwrap().contains("AI failed for first profile"));
+        assert!(
+            rendered
+                .warning
+                .as_deref()
+                .unwrap()
+                .contains("AI failed for first profile")
+        );
     }
 
     #[test]
@@ -1397,7 +1514,12 @@ mod tests {
         let later = Utc.with_ymd_and_hms(2026, 3, 10, 14, 0, 0).unwrap();
 
         database
-            .insert_commit(&sample_commit_at("aaa1111", "repo-a", "/tmp/repo-a", earlier))
+            .insert_commit(&sample_commit_at(
+                "aaa1111",
+                "repo-a",
+                "/tmp/repo-a",
+                earlier,
+            ))
             .unwrap();
         database
             .insert_commit(&sample_commit_at("bbb2222", "repo-b", "/tmp/repo-b", later))
@@ -1427,6 +1549,7 @@ mod tests {
                 md: true,
                 raw: false,
                 json: false,
+                table: false,
                 no_cache: false,
             }))
         );
@@ -1473,7 +1596,11 @@ mod tests {
             window,
             commits,
             || Ok(AppConfig::default()),
-            |_| Ok(Box::new(SuccessProvider("Standup summary for last 24h.".to_string()))),
+            |_| {
+                Ok(Box::new(SuccessProvider(
+                    "Standup summary for last 24h.".to_string(),
+                )))
+            },
         )
         .unwrap();
 
@@ -1498,15 +1625,17 @@ mod tests {
         )
         .unwrap();
 
-        assert!(rendered.output.contains("No commits recorded for last 24 hours (standup)"));
+        assert!(
+            rendered
+                .output
+                .contains("No commits recorded for last 24 hours (standup)")
+        );
         assert_eq!(rendered.warning, None);
     }
 
     #[test]
     fn standup_raw_skips_ai_and_shows_grouped_commits() {
-        let commits = vec![
-            sample_commit("abc1", "repo-a", "/tmp/repo-a", 9, 15),
-        ];
+        let commits = vec![sample_commit("abc1", "repo-a", "/tmp/repo-a", 9, 15)];
         let window = resolve_summary_window(
             SummaryPeriod::Standup,
             NaiveDate::from_ymd_opt(2026, 3, 10).unwrap(),
@@ -1518,6 +1647,7 @@ mod tests {
                 md: false,
                 raw: true,
                 json: false,
+                table: false,
                 no_cache: false,
             },
             window,
@@ -1534,9 +1664,7 @@ mod tests {
 
     #[test]
     fn standup_json_output_includes_date_label() {
-        let commits = vec![
-            sample_commit("abc1", "repo-a", "/tmp/repo-a", 9, 15),
-        ];
+        let commits = vec![sample_commit("abc1", "repo-a", "/tmp/repo-a", 9, 15)];
         let window = resolve_summary_window(
             SummaryPeriod::Standup,
             NaiveDate::from_ymd_opt(2026, 3, 10).unwrap(),
@@ -1548,6 +1676,7 @@ mod tests {
                 md: false,
                 raw: false,
                 json: true,
+                table: false,
                 no_cache: false,
             },
             window,
@@ -1557,16 +1686,64 @@ mod tests {
         )
         .unwrap();
 
-        assert!(rendered.output.contains("\"date_label\": \"last 24 hours (standup)\""));
+        assert!(
+            rendered
+                .output
+                .contains("\"date_label\": \"last 24 hours (standup)\"")
+        );
+    }
+
+    #[test]
+    fn table_output_renders_repo_totals_without_ai() {
+        let commits = vec![
+            sample_commit("abc1", "repo-a", "/tmp/repo-a", 9, 15),
+            sample_commit("def2", "repo-a", "/tmp/repo-a", 10, 30),
+            sample_commit("ghi3", "repo-b", "/tmp/repo-b", 11, 0),
+        ];
+        let window = resolve_summary_window(
+            SummaryPeriod::Today,
+            NaiveDate::from_ymd_opt(2026, 3, 10).unwrap(),
+        );
+        let (_, summary_args) =
+            summary_request_from_cli(parse_cli(["diddo", "--table"]).unwrap()).unwrap();
+        let database = crate::db::Database::open_in_memory().unwrap();
+        let rendered = render_summary_output(
+            &database,
+            summary_args,
+            window,
+            commits,
+            || Ok(AppConfig::default()),
+            |_| Err(crate::ai::AiError::new("should not be called")),
+        )
+        .unwrap();
+
+        assert!(rendered.output.contains("2026-03-10 (today)"));
+        assert!(rendered.output.contains("repo-a"));
+        assert!(rendered.output.contains("repo-b"));
+        assert!(rendered.output.contains("Total"));
+        assert!(rendered.output.contains("100.0%"));
+        assert_eq!(rendered.warning, None);
     }
 
     #[test]
     fn date_based_windows_have_no_exact_bounds() {
         let today = NaiveDate::from_ymd_opt(2026, 3, 12).unwrap();
 
-        assert!(resolve_summary_window(SummaryPeriod::Today, today).exact_bounds.is_none());
-        assert!(resolve_summary_window(SummaryPeriod::Yesterday, today).exact_bounds.is_none());
-        assert!(resolve_summary_window(SummaryPeriod::Week, today).exact_bounds.is_none());
+        assert!(
+            resolve_summary_window(SummaryPeriod::Today, today)
+                .exact_bounds
+                .is_none()
+        );
+        assert!(
+            resolve_summary_window(SummaryPeriod::Yesterday, today)
+                .exact_bounds
+                .is_none()
+        );
+        assert!(
+            resolve_summary_window(SummaryPeriod::Week, today)
+                .exact_bounds
+                .is_none()
+        );
     }
 
     #[test]

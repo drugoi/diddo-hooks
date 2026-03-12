@@ -136,25 +136,45 @@ Output modes:
 diddo --md
 diddo --json
 diddo --raw
+diddo --table
 diddo --no-cache
 
 diddo today --md
+diddo today --table
 diddo yesterday --json
+diddo yesterday --table
 diddo week --raw
+diddo week --table
 diddo today --no-cache
 ```
 
 - **`--md`** — Output summary as markdown.
 - **`--json`** — Output summary as JSON.
 - **`--raw`** — Skip AI and show grouped raw commit data.
+- **`--table`** — Skip AI and show per-repository commit counts and activity percentages.
 - **`--no-cache`** — Skip the AI summary cache and force a fresh summary.
+
+Example table output:
+
+```text
+2026-03-10 (today)
+
+repository   commits  percentage
+-----------  -------  ----------
+diddo              5       62.5%
+api-service        3       37.5%
+-----------  -------  ----------
+Total              8      100.0%
+```
 
 Current CLI behavior:
 
 - `diddo standup` shows commits from the last 24 hours (`[now - 24h, now]`), useful when your daily meeting is in the afternoon
 - `diddo` and `diddo today` are equivalent
-- `--md`, `--json`, and `--raw` are summary-only flags
+- `--md`, `--json`, `--raw`, and `--table` are summary-only flags
+- `--table` is mutually exclusive with `--md`, `--json`, and `--raw`
 - `--raw` skips AI and shows grouped commit data
+- `--table` skips AI and shows repository totals for the selected period
 - `--md` and `--json` still try AI first unless you also use `--raw`
 - If no commits are recorded for the selected period, `diddo` prints an empty-period message instead of failing
 

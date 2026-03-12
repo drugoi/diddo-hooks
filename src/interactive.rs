@@ -194,11 +194,23 @@ fn draw(stdout: &mut impl Write, selected: usize) -> io::Result<()> {
         let number = i + 1;
 
         if i == selected {
-            execute!(stdout, SetForegroundColor(Color::Cyan), SetAttribute(Attribute::Bold))?;
-            write!(stdout, "> {number}. {:<12}  {}", item.label, item.description)?;
+            execute!(
+                stdout,
+                SetForegroundColor(Color::Cyan),
+                SetAttribute(Attribute::Bold)
+            )?;
+            write!(
+                stdout,
+                "> {number}. {:<12}  {}",
+                item.label, item.description
+            )?;
             execute!(stdout, SetAttribute(Attribute::Reset), ResetColor)?;
         } else {
-            write!(stdout, "  {number}. {:<12}  {}", item.label, item.description)?;
+            write!(
+                stdout,
+                "  {number}. {:<12}  {}",
+                item.label, item.description
+            )?;
         }
 
         write!(stdout, "\r\n")?;
@@ -267,7 +279,14 @@ mod tests {
     #[test]
     fn menu_items_keys_are_valid_commands() {
         let valid = [
-            "standup", "today", "yesterday", "week", "config", "metadata", "init", "uninstall",
+            "standup",
+            "today",
+            "yesterday",
+            "week",
+            "config",
+            "metadata",
+            "init",
+            "uninstall",
         ];
         for item in MENU_ITEMS {
             assert!(
