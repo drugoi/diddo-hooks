@@ -616,8 +616,7 @@ where
                     if let Some(ref w) = attempt.warning {
                         warnings.push(w.clone());
                     }
-                    if let (Some(key), Some(s)) =
-                        (cache_key_opt.as_ref(), attempt.summary.as_ref())
+                    if let (Some(key), Some(s)) = (cache_key_opt.as_ref(), attempt.summary.as_ref())
                     {
                         let _ = database.set_cached_summary(key, s);
                     }
@@ -639,8 +638,7 @@ where
                     if let Some(ref w) = attempt.warning {
                         warnings.push(w.clone());
                     }
-                    if let (Some(key), Some(s)) =
-                        (cache_key_opt.as_ref(), attempt.summary.as_ref())
+                    if let (Some(key), Some(s)) = (cache_key_opt.as_ref(), attempt.summary.as_ref())
                     {
                         let _ = database.set_cached_summary(key, s);
                     }
