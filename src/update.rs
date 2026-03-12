@@ -2,6 +2,8 @@ use std::error::Error;
 use std::path::Path;
 use std::process::Command;
 
+use semver::Version;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InstallType {
     Homebrew,
@@ -57,7 +59,46 @@ pub fn release_target() -> Option<&'static str> {
     }
 }
 
+fn strip_v(s: &str) -> &str {
+    s.strip_prefix('v').unwrap_or(s).trim()
+}
+
+/// Returns true if `latest` is a newer version than `current` (semver).
+pub fn is_newer(current: &str, latest: &str) -> bool {
+    let cur = Version::parse(strip_v(current)).ok();
+    let lat = Version::parse(strip_v(latest)).ok();
+    match (cur, lat) {
+        (Some(c), Some(l)) => l > c,
+        _ => false,
+    }
+}
+
+const GITHUB_RELEASES_URL: &str = "https://api.github.com/repos/drugoi/diddo-hooks/releases/latest";
+
+/// Fetches the latest release tag (without leading 'v') from GitHub.
+pub fn fetch_latest_release_tag() -> Result<String, Box<dyn Error>> {
+    let client = reqwest::blocking::Client::builder()
+        .user_agent(format!("diddo/{}", env!("CARGO_PKG_VERSION")))
+        .build()?;
+    let resp = client.get(GITHUB_RELEASES_URL).send()?;
+    let json: serde_json::Value = resp.json()?;
+    let tag = json
+        .get("tag_name")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| std::io::Error::other("missing tag_name in release"))?;
+    Ok(strip_v(tag).to_string())
+}
+
 pub fn run(assume_yes: bool) -> Result<(), Box<dyn Error>> {
+    let current = env!("CARGO_PKG_VERSION");
+    let latest = match fetch_latest_release_tag() {
+        Ok(tag) => tag,
+        Err(e) => return Err(format!("Could not check for updates: {e}").into()),
+    };
+    if !is_newer(current, &latest) {
+        println!("diddo is already up to date ({current}).");
+        return Ok(());
+    }
     let exe = std::env::current_exe()?;
     let _install_type = current_install_type(&exe);
     let _target = release_target();
@@ -67,7 +108,7 @@ pub fn run(assume_yes: bool) -> Result<(), Box<dyn Error>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{install_type_from_path, release_target, InstallType};
+    use super::{install_type_from_path, is_newer, release_target, InstallType};
     use std::path::Path;
 
     #[test]
@@ -115,5 +156,25 @@ mod tests {
             "target should be a known triple: {}",
             t
         );
+    }
+
+    #[test]
+    fn is_newer_returns_true_when_latest_greater() {
+        assert!(is_newer("0.5.0", "0.6.0"));
+    }
+
+    #[test]
+    fn is_newer_returns_false_when_same() {
+        assert!(!is_newer("0.5.0", "0.5.0"));
+    }
+
+    #[test]
+    fn is_newer_returns_false_when_current_greater() {
+        assert!(!is_newer("0.6.0", "0.5.0"));
+    }
+
+    #[test]
+    fn is_newer_strips_v_prefix() {
+        assert!(is_newer("0.5.0", "v0.6.0"));
     }
 }
