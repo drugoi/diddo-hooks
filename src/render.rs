@@ -51,20 +51,15 @@ pub fn render_markdown(data: &SummaryData) -> String {
         output.push_str(&render_raw_markdown(&data.commits));
     }
 
+    output.push_str(&format!(
+        "\nFirst: {} | Last: {}\n",
+        data.first_commit_time, data.last_commit_time,
+    ));
+
     if !data.commits.is_empty() {
         output.push('\n');
         output.push_str(&render_markdown_table(&data.commits));
     }
-
-    output.push_str(&format!(
-        "\n---\n{} commits across {} projects | First: {} | Last: {} | Most active: {} ({})\n",
-        data.total_commits,
-        data.project_count,
-        data.first_commit_time,
-        data.last_commit_time,
-        data.most_active_project,
-        data.most_active_count
-    ));
 
     output
 }
@@ -155,21 +150,24 @@ pub fn render_markdown_by_profile_with_table(
     }
 
     if include_table {
+        output.push_str(&format!(
+            "First: {} | Last: {}\n\n",
+            global_stats.first_commit_time, global_stats.last_commit_time,
+        ));
         let all_commits = flatten_profile_commits(sections);
         if !all_commits.is_empty() {
             output.push_str(&render_markdown_table(&all_commits));
-            output.push('\n');
         }
+    } else {
+        output.push_str(&format!(
+            "---\n{} commits | First: {} | Last: {} | Most active: {} ({})\n",
+            global_stats.total_commits,
+            global_stats.first_commit_time,
+            global_stats.last_commit_time,
+            global_stats.most_active_project,
+            global_stats.most_active_count
+        ));
     }
-
-    output.push_str(&format!(
-        "---\n{} commits | First: {} | Last: {} | Most active: {} ({})\n",
-        global_stats.total_commits,
-        global_stats.first_commit_time,
-        global_stats.last_commit_time,
-        global_stats.most_active_project,
-        global_stats.most_active_count
-    ));
 
     output
 }
@@ -326,24 +324,26 @@ fn write_terminal_by_profile<W: Write>(
     }
 
     if include_table {
+        writeln!(writer, "First commit: {}", global_stats.first_commit_time)?;
+        writeln!(writer, "Last commit: {}", global_stats.last_commit_time)?;
+        writeln!(writer)?;
         let all_commits = flatten_profile_commits(sections);
         if !all_commits.is_empty() {
             write!(writer, "{}", render_terminal_table_body(&all_commits))?;
-            writeln!(writer)?;
         }
+    } else {
+        writeln!(writer, "-----------------------")?;
+        writeln!(writer, "{} commits", global_stats.total_commits)?;
+        writeln!(writer, "First commit: {}", global_stats.first_commit_time)?;
+        writeln!(writer, "Last commit: {}", global_stats.last_commit_time)?;
+        writeln!(
+            writer,
+            "Most active: {} ({} {})",
+            global_stats.most_active_project,
+            global_stats.most_active_count,
+            pluralize("commit", global_stats.most_active_count)
+        )?;
     }
-
-    writeln!(writer, "-----------------------")?;
-    writeln!(writer, "{} commits", global_stats.total_commits)?;
-    writeln!(writer, "First commit: {}", global_stats.first_commit_time)?;
-    writeln!(writer, "Last commit: {}", global_stats.last_commit_time)?;
-    writeln!(
-        writer,
-        "Most active: {} ({} {})",
-        global_stats.most_active_project,
-        global_stats.most_active_count,
-        pluralize("commit", global_stats.most_active_count)
-    )?;
     writeln!(writer)
 }
 
@@ -401,27 +401,15 @@ fn write_terminal<W: Write>(writer: &mut W, data: &SummaryData) -> io::Result<()
         write_raw_terminal(writer, &data.commits)?;
     }
 
+    writeln!(writer)?;
+    writeln!(writer, "First commit: {}", data.first_commit_time)?;
+    writeln!(writer, "Last commit: {}", data.last_commit_time)?;
+
     if !data.commits.is_empty() {
         writeln!(writer)?;
         write!(writer, "{}", render_terminal_table_body(&data.commits))?;
     }
 
-    writeln!(writer)?;
-    writeln!(writer, "-----------------------")?;
-    writeln!(
-        writer,
-        "{} commits across {} projects",
-        data.total_commits, data.project_count
-    )?;
-    writeln!(writer, "First commit: {}", data.first_commit_time)?;
-    writeln!(writer, "Last commit: {}", data.last_commit_time)?;
-    writeln!(
-        writer,
-        "Most active: {} ({} {})",
-        data.most_active_project,
-        data.most_active_count,
-        pluralize("commit", data.most_active_count)
-    )?;
     writeln!(writer)
 }
 
@@ -626,10 +614,10 @@ mod tests {
         assert!(rendered.contains("\n2026-03-10 (today)\n"));
         assert!(rendered.contains("Wrapped up hook integration."));
         assert!(rendered.contains("Kept config stable."));
-        assert!(rendered.contains("3 commits across 2 projects"));
+        assert!(!rendered.contains("3 commits across 2 projects"));
         assert!(rendered.contains("First commit: 09:15"));
         assert!(rendered.contains("Last commit: 15:20"));
-        assert!(rendered.contains("Most active: diddo (2 commits)"));
+        assert!(!rendered.contains("Most active: diddo (2 commits)"));
     }
 
     #[test]
@@ -675,9 +663,8 @@ mod tests {
 
         assert!(diddo_index < api_service_index);
         assert!(rendered.contains("- `abc1234` feat: add renderers"));
-        assert!(rendered.contains(
-            "3 commits across 2 projects | First: 09:15 | Last: 15:20 | Most active: diddo (2)"
-        ));
+        assert!(rendered.contains("First: 09:15 | Last: 15:20"));
+        assert!(!rendered.contains("3 commits across 2 projects"));
     }
 
     #[test]
@@ -859,41 +846,41 @@ mod tests {
         let rendered = render_terminal_to_string(&data);
 
         let ai_pos = rendered.find("AI summary here.").unwrap();
+        let first_commit_pos = rendered.find("First commit:").unwrap();
         let table_pos = rendered.find("repository").unwrap();
-        let footer_pos = rendered.find("3 commits across 2 projects").unwrap();
-        assert!(ai_pos < table_pos);
-        assert!(table_pos < footer_pos);
+        assert!(ai_pos < first_commit_pos);
+        assert!(first_commit_pos < table_pos);
         assert!(rendered.contains("Total"));
         assert!(rendered.contains("100.0%"));
     }
 
     #[test]
-    fn terminal_summary_without_ai_appends_table_before_footer() {
+    fn terminal_summary_without_ai_appends_table_after_first_last() {
         let data = sample_summary(None);
         let rendered = render_terminal_to_string(&data);
 
         let raw_pos = rendered.find("diddo (2 commits)").unwrap();
+        let first_commit_pos = rendered.find("First commit:").unwrap();
         let table_pos = rendered.find("repository").unwrap();
-        let footer_pos = rendered.find("3 commits across 2 projects").unwrap();
-        assert!(raw_pos < table_pos);
-        assert!(table_pos < footer_pos);
+        assert!(raw_pos < first_commit_pos);
+        assert!(first_commit_pos < table_pos);
     }
 
     #[test]
-    fn markdown_summary_appends_markdown_table_before_stats() {
+    fn markdown_summary_appends_table_after_first_last() {
         let data = sample_summary(Some("AI markdown summary."));
         let rendered = render_markdown(&data);
 
         let ai_pos = rendered.find("AI markdown summary.").unwrap();
+        let stats_pos = rendered.find("First:").unwrap();
         let table_pos = rendered.find("| repository |").unwrap();
-        let stats_pos = rendered.find("3 commits across 2 projects").unwrap();
-        assert!(ai_pos < table_pos);
-        assert!(table_pos < stats_pos);
+        assert!(ai_pos < stats_pos);
+        assert!(stats_pos < table_pos);
         assert!(rendered.contains("| **Total** |"));
     }
 
     #[test]
-    fn by_profile_terminal_appends_table_before_footer() {
+    fn by_profile_terminal_appends_table_after_first_last() {
         let commit = sample_commit("abc123", "feat: add x", "my-repo", 9, 15);
         let groups: Vec<ProfileGroup> = vec![ProfileGroup {
             profile_label: "dev@example.com".to_string(),
@@ -908,16 +895,16 @@ mod tests {
 
         let out = render_terminal_to_string_by_profile(&groups, "2026-03-10 (today)", &stats);
         let summary_pos = out.find("Shipped the new feature.").unwrap();
+        let first_commit_pos = out.find("First commit:").unwrap();
         let table_pos = out.find("repository").unwrap();
-        let footer_pos = out.find("1 commits").unwrap();
-        assert!(summary_pos < table_pos);
-        assert!(table_pos < footer_pos);
+        assert!(summary_pos < first_commit_pos);
+        assert!(first_commit_pos < table_pos);
         assert!(out.contains("Total"));
         assert!(out.contains("100.0%"));
     }
 
     #[test]
-    fn by_profile_markdown_appends_markdown_table_before_footer() {
+    fn by_profile_markdown_appends_table_after_first_last() {
         let commit = sample_commit("abc123", "feat: add x", "my-repo", 9, 15);
         let groups: Vec<ProfileGroup> = vec![ProfileGroup {
             profile_label: "dev@example.com".to_string(),
@@ -932,10 +919,10 @@ mod tests {
 
         let md = render_markdown_by_profile(&groups, "2026-03-10 (today)", &stats);
         let summary_pos = md.find("Shipped the new feature.").unwrap();
+        let first_pos = md.find("First:").unwrap();
         let table_pos = md.find("| repository |").unwrap();
-        let footer_pos = md.find("1 commits").unwrap();
-        assert!(summary_pos < table_pos);
-        assert!(table_pos < footer_pos);
+        assert!(summary_pos < first_pos);
+        assert!(first_pos < table_pos);
         assert!(md.contains("| **Total** |"));
     }
 

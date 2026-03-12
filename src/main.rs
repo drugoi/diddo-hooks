@@ -1822,10 +1822,16 @@ mod tests {
         .unwrap();
 
         let ai_pos = rendered.output.find("AI summary text.").unwrap();
+        let first_commit_pos = rendered.output.find("First commit:").unwrap();
         let table_pos = rendered.output.find("repository").unwrap();
-        let footer_pos = rendered.output.find("3 commits").unwrap();
-        assert!(ai_pos < table_pos, "AI summary should appear before table");
-        assert!(table_pos < footer_pos, "table should appear before footer");
+        assert!(
+            ai_pos < first_commit_pos,
+            "AI summary should appear before first/last commit"
+        );
+        assert!(
+            first_commit_pos < table_pos,
+            "first/last commit should appear before table"
+        );
         assert!(rendered.output.contains("Total"));
         assert!(rendered.output.contains("100.0%"));
     }
