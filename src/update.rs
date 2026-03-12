@@ -136,13 +136,13 @@ pub fn run(assume_yes: bool) -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
 
-    if !confirm_update(current, &latest, assume_yes) {
-        return Ok(());
-    }
     let target = match target {
         Some(t) => t,
         None => return Err("No release available for your platform (unsupported target).".into()),
     };
+    if !confirm_update(current, &latest, assume_yes) {
+        return Ok(());
+    }
     let result = self_update::backends::github::Update::configure()
         .repo_owner("drugoi")
         .repo_name("diddo-hooks")
