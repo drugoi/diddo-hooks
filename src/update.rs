@@ -1,4 +1,5 @@
 use std::error::Error;
+use std::io::{self, IsTerminal, Write};
 use std::path::Path;
 use std::process::Command;
 
@@ -87,6 +88,26 @@ pub fn fetch_latest_release_tag() -> Result<String, Box<dyn Error>> {
         .and_then(|v| v.as_str())
         .ok_or_else(|| std::io::Error::other("missing tag_name in release"))?;
     Ok(strip_v(tag).to_string())
+}
+
+/// Asks the user to confirm the update. Returns true to proceed, false to skip.
+/// If assume_yes is true, returns true without prompting.
+/// If stdin is not a TTY, prints a message and returns false.
+pub fn confirm_update(current: &str, latest: &str, assume_yes: bool) -> bool {
+    if assume_yes {
+        return true;
+    }
+    if !io::stdin().is_terminal() {
+        eprintln!("A new version is available. Run with --yes to update non-interactively.");
+        return false;
+    }
+    print!("Update diddo {current} → {latest}? [y/N] ");
+    let _ = io::stdout().flush();
+    let mut line = String::new();
+    if io::stdin().read_line(&mut line).is_err() {
+        return false;
+    }
+    matches!(line.trim().to_lowercase().chars().next(), Some('y'))
 }
 
 pub fn run(assume_yes: bool) -> Result<(), Box<dyn Error>> {
