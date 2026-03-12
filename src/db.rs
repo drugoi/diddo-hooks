@@ -1,7 +1,7 @@
 use std::{fs, path::Path};
 
 use chrono::{DateTime, Local, LocalResult, NaiveDate, TimeZone, Utc};
-use rusqlite::{params, types::Type, Connection, Result, Row};
+use rusqlite::{Connection, Result, Row, params, types::Type};
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -277,7 +277,7 @@ mod tests {
     use chrono::{Duration, FixedOffset, Local, NaiveDate, TimeZone, Utc};
     use rusqlite::Row;
 
-    use super::{date_range_bounds_in_timezone, Commit, Database};
+    use super::{Commit, Database, date_range_bounds_in_timezone};
 
     #[test]
     fn creates_commits_table_with_expected_columns_and_date_repo_index() {

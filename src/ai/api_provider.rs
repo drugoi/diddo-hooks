@@ -1,12 +1,12 @@
 use reqwest::{
-    blocking::Client,
-    header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE},
     StatusCode,
+    blocking::Client,
+    header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue},
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::{
-    ai::{build_prompt, AiError, AiProvider, Result},
+    ai::{AiError, AiProvider, Result, build_prompt},
     config::AiConfig,
     db::Commit,
 };
@@ -265,8 +265,8 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        build_error_message, build_request_body, extract_error_message, extract_summary_text,
-        ApiKind, ApiProvider,
+        ApiKind, ApiProvider, build_error_message, build_request_body, extract_error_message,
+        extract_summary_text,
     };
     use crate::db::Commit;
 

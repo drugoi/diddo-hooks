@@ -810,11 +810,11 @@ mod tests {
     use chrono::{NaiveDate, TimeZone, Utc};
 
     use super::{
+        AiSummaryAttempt, Commands, OutputFormat, ParsedCli, SummaryArgs, SummaryPeriod,
         build_summary_data, compute_cache_key, format_commit_time, format_config_paths,
         format_file_size, format_metadata, output_format, parse_cli, render_empty_summary,
         render_summary_output, resolve_summary_window, should_try_ai_summary,
-        summary_request_from_cli, try_ai_summary, AiSummaryAttempt, Commands, OutputFormat,
-        ParsedCli, SummaryArgs, SummaryPeriod,
+        summary_request_from_cli, try_ai_summary,
     };
     use crate::{
         ai::{AiError, AiProvider},
@@ -1391,9 +1391,11 @@ mod tests {
         .unwrap();
 
         assert_eq!(rendered.warning, None);
-        assert!(rendered
-            .output
-            .contains("\"date_label\": \"2026-03-10 (today)\""));
+        assert!(
+            rendered
+                .output
+                .contains("\"date_label\": \"2026-03-10 (today)\"")
+        );
         assert!(rendered.output.contains("\"projects\": []"));
         assert!(rendered.output.contains("\"ai_summary\": null"));
         assert!(!rendered.output.contains("\"message\""));
@@ -1559,11 +1561,13 @@ mod tests {
         assert!(rendered.output.contains("repo-a (1 commit)"));
         assert!(rendered.output.contains("a1  feat: update repo-a"));
         assert!(rendered.output.contains("Bob summary."));
-        assert!(rendered
-            .warning
-            .as_deref()
-            .unwrap()
-            .contains("AI failed for first profile"));
+        assert!(
+            rendered
+                .warning
+                .as_deref()
+                .unwrap()
+                .contains("AI failed for first profile")
+        );
     }
 
     #[test]
@@ -1696,9 +1700,11 @@ mod tests {
         )
         .unwrap();
 
-        assert!(rendered
-            .output
-            .contains("No commits recorded for last 24 hours (standup)"));
+        assert!(
+            rendered
+                .output
+                .contains("No commits recorded for last 24 hours (standup)")
+        );
         assert_eq!(rendered.warning, None);
     }
 
@@ -1755,9 +1761,11 @@ mod tests {
         )
         .unwrap();
 
-        assert!(rendered
-            .output
-            .contains("\"date_label\": \"last 24 hours (standup)\""));
+        assert!(
+            rendered
+                .output
+                .contains("\"date_label\": \"last 24 hours (standup)\"")
+        );
     }
 
     #[test]
@@ -1933,15 +1941,21 @@ mod tests {
     fn date_based_windows_have_no_exact_bounds() {
         let today = NaiveDate::from_ymd_opt(2026, 3, 12).unwrap();
 
-        assert!(resolve_summary_window(SummaryPeriod::Today, today)
-            .exact_bounds
-            .is_none());
-        assert!(resolve_summary_window(SummaryPeriod::Yesterday, today)
-            .exact_bounds
-            .is_none());
-        assert!(resolve_summary_window(SummaryPeriod::Week, today)
-            .exact_bounds
-            .is_none());
+        assert!(
+            resolve_summary_window(SummaryPeriod::Today, today)
+                .exact_bounds
+                .is_none()
+        );
+        assert!(
+            resolve_summary_window(SummaryPeriod::Yesterday, today)
+                .exact_bounds
+                .is_none()
+        );
+        assert!(
+            resolve_summary_window(SummaryPeriod::Week, today)
+                .exact_bounds
+                .is_none()
+        );
     }
 
     #[test]

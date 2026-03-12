@@ -1,7 +1,7 @@
 use std::{env, io, path::Path, process::Command};
 
 use crate::{
-    ai::{build_prompt, AiError, AiProvider, Result},
+    ai::{AiError, AiProvider, Result, build_prompt},
     db::Commit,
 };
 

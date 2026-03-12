@@ -294,7 +294,7 @@ mod tests {
     use chrono::{TimeZone, Utc};
 
     use super::{
-        build_prompt, select_provider, AiError, AiProvider, FallbackProvider, ProviderChoice,
+        AiError, AiProvider, FallbackProvider, ProviderChoice, build_prompt, select_provider,
     };
     use crate::{
         ai::{api_provider::ApiKind, cli_provider::CliTool},

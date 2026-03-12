@@ -598,8 +598,8 @@ mod tests {
     use serde_json::Value;
 
     use super::{
-        render_json, render_markdown, render_markdown_by_profile, render_terminal_to_string,
-        render_terminal_to_string_by_profile, write_terminal, GlobalStats, SummaryData,
+        GlobalStats, SummaryData, render_json, render_markdown, render_markdown_by_profile,
+        render_terminal_to_string, render_terminal_to_string_by_profile, write_terminal,
     };
     use crate::db::Commit;
     use crate::summary_group::{ProfileGroup, RepoGroup};
