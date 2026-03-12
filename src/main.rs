@@ -185,7 +185,12 @@ where
 
 fn main() {
     let raw_args: Vec<OsString> = std::env::args_os().collect();
-    let is_bare_invocation = raw_args.len() == 1;
+    let is_bare_invocation = raw_args.len() == 1
+        || raw_args.iter().skip(1).all(|arg| {
+            arg.to_str().is_some_and(|s| {
+                s.starts_with('-') && !matches!(s, "-h" | "--help" | "-V" | "--version")
+            })
+        });
 
     if is_bare_invocation && std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
         let selected = match interactive::run() {
@@ -661,13 +666,20 @@ where
     };
 
     let global_stats = build_global_stats(&commits);
+    let include_table = !summary_args.raw;
     let output = match format {
-        OutputFormat::Terminal => {
-            render::render_terminal_to_string_by_profile(&groups, &window.date_label, &global_stats)
-        }
-        OutputFormat::Markdown => {
-            render::render_markdown_by_profile(&groups, &window.date_label, &global_stats)
-        }
+        OutputFormat::Terminal => render::render_terminal_to_string_by_profile_with_table(
+            &groups,
+            &window.date_label,
+            &global_stats,
+            include_table,
+        ),
+        OutputFormat::Markdown => render::render_markdown_by_profile_with_table(
+            &groups,
+            &window.date_label,
+            &global_stats,
+            include_table,
+        ),
         OutputFormat::Json => {
             render::render_json_by_profile(&groups, &window.date_label, &global_stats)
         }
@@ -1723,6 +1735,137 @@ mod tests {
         assert!(rendered.output.contains("Total"));
         assert!(rendered.output.contains("100.0%"));
         assert_eq!(rendered.warning, None);
+    }
+
+    #[test]
+    fn default_terminal_output_appends_repo_table_after_ai_summary() {
+        let commits = vec![
+            sample_commit("abc1", "repo-a", "/tmp/repo-a", 9, 15),
+            sample_commit("def2", "repo-a", "/tmp/repo-a", 10, 30),
+            sample_commit("ghi3", "repo-b", "/tmp/repo-b", 11, 0),
+        ];
+        let window = resolve_summary_window(
+            SummaryPeriod::Today,
+            NaiveDate::from_ymd_opt(2026, 3, 10).unwrap(),
+        );
+        let database = crate::db::Database::open_in_memory().unwrap();
+        let rendered = render_summary_output(
+            &database,
+            SummaryArgs::default(),
+            window,
+            commits,
+            || Ok(AppConfig::default()),
+            |_| Ok(Box::new(SuccessProvider("AI summary text.".to_string()))),
+        )
+        .unwrap();
+
+        let ai_pos = rendered.output.find("AI summary text.").unwrap();
+        let table_pos = rendered.output.find("repository").unwrap();
+        let footer_pos = rendered.output.find("3 commits").unwrap();
+        assert!(ai_pos < table_pos, "AI summary should appear before table");
+        assert!(table_pos < footer_pos, "table should appear before footer");
+        assert!(rendered.output.contains("Total"));
+        assert!(rendered.output.contains("100.0%"));
+    }
+
+    #[test]
+    fn markdown_output_appends_repo_table_by_default() {
+        let commits = vec![
+            sample_commit("abc1", "repo-a", "/tmp/repo-a", 9, 15),
+            sample_commit("def2", "repo-b", "/tmp/repo-b", 10, 30),
+        ];
+        let window = resolve_summary_window(
+            SummaryPeriod::Today,
+            NaiveDate::from_ymd_opt(2026, 3, 10).unwrap(),
+        );
+        let database = crate::db::Database::open_in_memory().unwrap();
+        let rendered = render_summary_output(
+            &database,
+            SummaryArgs {
+                md: true,
+                raw: false,
+                json: false,
+                table: false,
+                no_cache: false,
+            },
+            window,
+            commits,
+            || Ok(AppConfig::default()),
+            |_| Ok(Box::new(SuccessProvider("MD summary.".to_string()))),
+        )
+        .unwrap();
+
+        assert!(rendered.output.contains("| repository |"));
+        assert!(rendered.output.contains("| **Total** |"));
+        let summary_pos = rendered.output.find("MD summary.").unwrap();
+        let table_pos = rendered.output.find("| repository |").unwrap();
+        assert!(summary_pos < table_pos);
+    }
+
+    #[test]
+    fn raw_output_does_not_append_repo_table() {
+        let commits = vec![
+            sample_commit("abc1", "repo-a", "/tmp/repo-a", 9, 15),
+            sample_commit("def2", "repo-b", "/tmp/repo-b", 10, 30),
+        ];
+        let window = resolve_summary_window(
+            SummaryPeriod::Today,
+            NaiveDate::from_ymd_opt(2026, 3, 10).unwrap(),
+        );
+        let database = crate::db::Database::open_in_memory().unwrap();
+        let rendered = render_summary_output(
+            &database,
+            SummaryArgs {
+                md: false,
+                raw: true,
+                json: false,
+                table: false,
+                no_cache: false,
+            },
+            window,
+            commits,
+            || Ok(AppConfig::default()),
+            |_| Err(crate::ai::AiError::new("should not be called")),
+        )
+        .unwrap();
+
+        assert!(rendered.output.contains("repo-a"));
+        assert!(!rendered.output.contains("repository"));
+        assert!(!rendered.output.contains("percentage"));
+        assert!(!rendered.output.contains("| repository |"));
+    }
+
+    #[test]
+    fn json_output_remains_unchanged_without_table_section() {
+        let commits = vec![
+            sample_commit("abc1", "repo-a", "/tmp/repo-a", 9, 15),
+            sample_commit("def2", "repo-b", "/tmp/repo-b", 10, 30),
+        ];
+        let window = resolve_summary_window(
+            SummaryPeriod::Today,
+            NaiveDate::from_ymd_opt(2026, 3, 10).unwrap(),
+        );
+        let database = crate::db::Database::open_in_memory().unwrap();
+        let rendered = render_summary_output(
+            &database,
+            SummaryArgs {
+                md: false,
+                raw: false,
+                json: true,
+                table: false,
+                no_cache: false,
+            },
+            window,
+            commits,
+            || Ok(AppConfig::default()),
+            |_| Ok(Box::new(SuccessProvider("JSON summary.".to_string()))),
+        )
+        .unwrap();
+
+        assert!(rendered.output.contains("\"date_label\""));
+        assert!(!rendered.output.contains("repository"));
+        assert!(!rendered.output.contains("percentage"));
+        assert!(!rendered.output.contains("| repository |"));
     }
 
     #[test]

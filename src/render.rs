@@ -51,6 +51,11 @@ pub fn render_markdown(data: &SummaryData) -> String {
         output.push_str(&render_raw_markdown(&data.commits));
     }
 
+    if !data.commits.is_empty() {
+        output.push('\n');
+        output.push_str(&render_markdown_table(&data.commits));
+    }
+
     output.push_str(&format!(
         "\n---\n{} commits across {} projects | First: {} | Last: {} | Most active: {} ({})\n",
         data.total_commits,
@@ -101,8 +106,23 @@ pub fn render_terminal_to_string_by_profile(
     date_label: &str,
     global_stats: &GlobalStats,
 ) -> String {
+    render_terminal_to_string_by_profile_with_table(sections, date_label, global_stats, true)
+}
+
+pub fn render_terminal_to_string_by_profile_with_table(
+    sections: &[ProfileGroup],
+    date_label: &str,
+    global_stats: &GlobalStats,
+    include_table: bool,
+) -> String {
     let mut output = Vec::new();
-    let _ = write_terminal_by_profile(&mut output, sections, date_label, global_stats);
+    let _ = write_terminal_by_profile(
+        &mut output,
+        sections,
+        date_label,
+        global_stats,
+        include_table,
+    );
     String::from_utf8(output).unwrap_or_default()
 }
 
@@ -111,6 +131,15 @@ pub fn render_markdown_by_profile(
     sections: &[ProfileGroup],
     date_label: &str,
     global_stats: &GlobalStats,
+) -> String {
+    render_markdown_by_profile_with_table(sections, date_label, global_stats, true)
+}
+
+pub fn render_markdown_by_profile_with_table(
+    sections: &[ProfileGroup],
+    date_label: &str,
+    global_stats: &GlobalStats,
+    include_table: bool,
 ) -> String {
     let mut output = format!("# {}\n\n", date_label);
 
@@ -123,6 +152,14 @@ pub fn render_markdown_by_profile(
             output.push_str(&repos_to_markdown(&section.repos));
         }
         output.push_str("\n\n");
+    }
+
+    if include_table {
+        let all_commits = flatten_profile_commits(sections);
+        if !all_commits.is_empty() {
+            output.push_str(&render_markdown_table(&all_commits));
+            output.push('\n');
+        }
     }
 
     output.push_str(&format!(
@@ -178,7 +215,8 @@ pub fn render_json_by_profile(
     .unwrap_or_else(|_| "{}".to_string())
 }
 
-pub fn render_table(commits: &[Commit], date_label: &str) -> String {
+/// Renders the table body (header, rows, total) as an ASCII table for terminal embedding.
+pub(crate) fn render_terminal_table_body(commits: &[Commit]) -> String {
     let rows = repo_table_rows(commits);
     let total_commits = commits.len();
     let total_percentage = "100.0%";
@@ -209,9 +247,6 @@ pub fn render_table(commits: &[Commit], date_label: &str) -> String {
     );
 
     let mut output = String::new();
-    output.push('\n');
-    output.push_str(date_label);
-    output.push_str("\n\n");
     output.push_str(&format!(
         "{:<repository_width$}  {:>commits_width$}  {:>percentage_width$}\n",
         "repository", "commits", "percentage"
@@ -235,11 +270,44 @@ pub fn render_table(commits: &[Commit], date_label: &str) -> String {
     output
 }
 
+/// Renders repository activity as a markdown table.
+pub(crate) fn render_markdown_table(commits: &[Commit]) -> String {
+    let rows = repo_table_rows(commits);
+    let total_commits = commits.len();
+
+    let mut output = String::new();
+    output.push_str("| repository | commits | percentage |\n");
+    output.push_str("| --- | ---: | ---: |\n");
+
+    for row in rows {
+        output.push_str(&format!(
+            "| {} | {} | {} |\n",
+            row.repository, row.commit_count, row.percentage
+        ));
+    }
+
+    output.push_str(&format!(
+        "| **Total** | **{}** | **100.0%** |\n",
+        total_commits
+    ));
+    output
+}
+
+pub fn render_table(commits: &[Commit], date_label: &str) -> String {
+    let mut output = String::new();
+    output.push('\n');
+    output.push_str(date_label);
+    output.push_str("\n\n");
+    output.push_str(&render_terminal_table_body(commits));
+    output
+}
+
 fn write_terminal_by_profile<W: Write>(
     writer: &mut W,
     sections: &[ProfileGroup],
     date_label: &str,
     global_stats: &GlobalStats,
+    include_table: bool,
 ) -> io::Result<()> {
     writeln!(writer)?;
     writeln!(writer, "{}", date_label)?;
@@ -257,6 +325,14 @@ fn write_terminal_by_profile<W: Write>(
         writeln!(writer)?;
     }
 
+    if include_table {
+        let all_commits = flatten_profile_commits(sections);
+        if !all_commits.is_empty() {
+            write!(writer, "{}", render_terminal_table_body(&all_commits))?;
+            writeln!(writer)?;
+        }
+    }
+
     writeln!(writer, "-----------------------")?;
     writeln!(writer, "{} commits", global_stats.total_commits)?;
     writeln!(writer, "First commit: {}", global_stats.first_commit_time)?;
@@ -269,6 +345,13 @@ fn write_terminal_by_profile<W: Write>(
         pluralize("commit", global_stats.most_active_count)
     )?;
     writeln!(writer)
+}
+
+fn flatten_profile_commits(sections: &[ProfileGroup]) -> Vec<Commit> {
+    sections
+        .iter()
+        .flat_map(|s| s.repos.iter().flat_map(|r| r.commits.iter().cloned()))
+        .collect()
 }
 
 fn write_repos_terminal<W: Write>(writer: &mut W, repos: &[RepoGroup]) -> io::Result<()> {
@@ -316,6 +399,11 @@ fn write_terminal<W: Write>(writer: &mut W, data: &SummaryData) -> io::Result<()
         }
     } else {
         write_raw_terminal(writer, &data.commits)?;
+    }
+
+    if !data.commits.is_empty() {
+        writeln!(writer)?;
+        write!(writer, "{}", render_terminal_table_body(&data.commits))?;
     }
 
     writeln!(writer)?;
@@ -522,7 +610,7 @@ mod tests {
 
     use super::{
         GlobalStats, SummaryData, render_json, render_markdown, render_markdown_by_profile,
-        render_terminal_to_string_by_profile, write_terminal,
+        render_terminal_to_string, render_terminal_to_string_by_profile, write_terminal,
     };
     use crate::db::Commit;
     use crate::summary_group::{ProfileGroup, RepoGroup};
@@ -732,6 +820,120 @@ mod tests {
         assert!(md.contains("### proj (2 commits)"));
         assert!(md.contains("- `h1` first commit"));
         assert!(md.contains("- `h2` second commit"));
+    }
+
+    #[test]
+    fn markdown_table_renders_repo_counts_percentages_and_total() {
+        let commits = sample_summary(None).commits;
+        let rendered = super::render_markdown_table(&commits);
+
+        assert!(rendered.contains("| repository | commits | percentage |"));
+        assert!(rendered.contains("| --- | ---: | ---: |"));
+        assert!(rendered.contains("| diddo | 2 | 66.7% |"));
+        assert!(rendered.contains("| api-service | 1 | 33.3% |"));
+        assert!(rendered.contains("| **Total** | **3** | **100.0%** |"));
+    }
+
+    #[test]
+    fn terminal_table_body_contains_repo_rows_and_total() {
+        let commits = sample_summary(None).commits;
+        let rendered = super::render_terminal_table_body(&commits);
+
+        assert!(rendered.contains("repository"));
+        assert!(rendered.contains("commits"));
+        assert!(rendered.contains("percentage"));
+        assert!(rendered.contains("diddo"));
+        assert!(rendered.contains("api-service"));
+        assert!(rendered.contains("Total"));
+        assert!(rendered.contains("100.0%"));
+        // Should NOT contain a date label — that's the caller's job
+        assert!(!rendered.contains("2026"));
+    }
+
+    #[test]
+    fn terminal_summary_with_ai_appends_table_before_footer() {
+        let data = sample_summary(Some("AI summary here."));
+        let rendered = render_terminal_to_string(&data);
+
+        let ai_pos = rendered.find("AI summary here.").unwrap();
+        let table_pos = rendered.find("repository").unwrap();
+        let footer_pos = rendered.find("3 commits across 2 projects").unwrap();
+        assert!(ai_pos < table_pos);
+        assert!(table_pos < footer_pos);
+        assert!(rendered.contains("Total"));
+        assert!(rendered.contains("100.0%"));
+    }
+
+    #[test]
+    fn terminal_summary_without_ai_appends_table_before_footer() {
+        let data = sample_summary(None);
+        let rendered = render_terminal_to_string(&data);
+
+        let raw_pos = rendered.find("diddo (2 commits)").unwrap();
+        let table_pos = rendered.find("repository").unwrap();
+        let footer_pos = rendered.find("3 commits across 2 projects").unwrap();
+        assert!(raw_pos < table_pos);
+        assert!(table_pos < footer_pos);
+    }
+
+    #[test]
+    fn markdown_summary_appends_markdown_table_before_stats() {
+        let data = sample_summary(Some("AI markdown summary."));
+        let rendered = render_markdown(&data);
+
+        let ai_pos = rendered.find("AI markdown summary.").unwrap();
+        let table_pos = rendered.find("| repository |").unwrap();
+        let stats_pos = rendered.find("3 commits across 2 projects").unwrap();
+        assert!(ai_pos < table_pos);
+        assert!(table_pos < stats_pos);
+        assert!(rendered.contains("| **Total** |"));
+    }
+
+    #[test]
+    fn by_profile_terminal_appends_table_before_footer() {
+        let commit = sample_commit("abc123", "feat: add x", "my-repo", 9, 15);
+        let groups: Vec<ProfileGroup> = vec![ProfileGroup {
+            profile_label: "dev@example.com".to_string(),
+            repos: vec![RepoGroup {
+                repo_name: "my-repo".to_string(),
+                repo_path: "/path/my-repo".to_string(),
+                commits: vec![commit],
+            }],
+            ai_summary: Some("Shipped the new feature.".to_string()),
+        }];
+        let stats = default_global_stats();
+
+        let out = render_terminal_to_string_by_profile(&groups, "2026-03-10 (today)", &stats);
+        let summary_pos = out.find("Shipped the new feature.").unwrap();
+        let table_pos = out.find("repository").unwrap();
+        let footer_pos = out.find("1 commits").unwrap();
+        assert!(summary_pos < table_pos);
+        assert!(table_pos < footer_pos);
+        assert!(out.contains("Total"));
+        assert!(out.contains("100.0%"));
+    }
+
+    #[test]
+    fn by_profile_markdown_appends_markdown_table_before_footer() {
+        let commit = sample_commit("abc123", "feat: add x", "my-repo", 9, 15);
+        let groups: Vec<ProfileGroup> = vec![ProfileGroup {
+            profile_label: "dev@example.com".to_string(),
+            repos: vec![RepoGroup {
+                repo_name: "my-repo".to_string(),
+                repo_path: "/path/my-repo".to_string(),
+                commits: vec![commit],
+            }],
+            ai_summary: Some("Shipped the new feature.".to_string()),
+        }];
+        let stats = default_global_stats();
+
+        let md = render_markdown_by_profile(&groups, "2026-03-10 (today)", &stats);
+        let summary_pos = md.find("Shipped the new feature.").unwrap();
+        let table_pos = md.find("| repository |").unwrap();
+        let footer_pos = md.find("1 commits").unwrap();
+        assert!(summary_pos < table_pos);
+        assert!(table_pos < footer_pos);
+        assert!(md.contains("| **Total** |"));
     }
 
     #[test]
