@@ -11,8 +11,7 @@ pub enum InstallType {
     GitHub,
 }
 
-/// Determines install type from the executable path and optional Homebrew prefix.
-/// Used for testing without calling `brew --prefix`; production code uses `current_install_type`.
+/// Install type from path and optional Homebrew prefix.
 pub fn install_type_from_path(exe_path: &Path, brew_prefix: Option<&Path>) -> InstallType {
     let path_str = exe_path.to_string_lossy();
     if path_str.contains("Cellar") {
@@ -28,7 +27,7 @@ pub fn install_type_from_path(exe_path: &Path, brew_prefix: Option<&Path>) -> In
     InstallType::GitHub
 }
 
-/// Detects install type by resolving the exe path and optionally running `brew --prefix`.
+/// Detects install type (exe path and brew --prefix).
 pub fn current_install_type(exe_path: &Path) -> InstallType {
     let canonical = exe_path.canonicalize().unwrap_or_else(|_| exe_path.to_path_buf());
     let brew_prefix = Command::new("brew")
@@ -47,7 +46,7 @@ pub fn current_install_type(exe_path: &Path) -> InstallType {
     install_type_from_path(&canonical, brew_prefix.as_deref())
 }
 
-/// Returns the release target triple for the current platform, or None if unsupported.
+/// Release target triple for current platform, or None if unsupported.
 pub fn release_target() -> Option<&'static str> {
     let (os, arch) = (std::env::consts::OS, std::env::consts::ARCH);
     match (os, arch) {
@@ -64,7 +63,7 @@ fn strip_v(s: &str) -> &str {
     s.strip_prefix('v').unwrap_or(s).trim()
 }
 
-/// Returns true if `latest` is a newer version than `current` (semver).
+/// True if latest is newer than current (semver).
 pub fn is_newer(current: &str, latest: &str) -> bool {
     let cur = Version::parse(strip_v(current)).ok();
     let lat = Version::parse(strip_v(latest)).ok();
@@ -76,7 +75,7 @@ pub fn is_newer(current: &str, latest: &str) -> bool {
 
 const GITHUB_RELEASES_URL: &str = "https://api.github.com/repos/drugoi/diddo-hooks/releases/latest";
 
-/// Fetches the latest release tag (without leading 'v') from GitHub.
+/// Fetches latest release tag from GitHub (no leading 'v').
 pub fn fetch_latest_release_tag() -> Result<String, Box<dyn Error>> {
     let client = reqwest::blocking::Client::builder()
         .user_agent(format!("diddo/{}", env!("CARGO_PKG_VERSION")))
@@ -90,9 +89,7 @@ pub fn fetch_latest_release_tag() -> Result<String, Box<dyn Error>> {
     Ok(strip_v(tag).to_string())
 }
 
-/// Asks the user to confirm the update. Returns true to proceed, false to skip.
-/// If assume_yes is true, returns true without prompting.
-/// If stdin is not a TTY, prints a message and returns false.
+/// Confirm with user; true to proceed. No prompt if assume_yes or non-TTY.
 pub fn confirm_update(current: &str, latest: &str, assume_yes: bool) -> bool {
     if assume_yes {
         return true;
@@ -139,15 +136,12 @@ pub fn run(assume_yes: bool) -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
 
-    // GitHub path (Task 6)
     if !confirm_update(current, &latest, assume_yes) {
         return Ok(());
     }
     let target = match target {
         Some(t) => t,
-        None => {
-            return Err("No release available for your platform (unsupported target).".into());
-        }
+        None => return Err("No release available for your platform (unsupported target).".into()),
     };
     let result = self_update::backends::github::Update::configure()
         .repo_owner("drugoi")
