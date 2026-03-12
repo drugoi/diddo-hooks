@@ -167,9 +167,11 @@ diddo init
 diddo uninstall
 diddo config
 diddo metadata
+diddo update
 ```
 
 - **`diddo metadata`** — Show database metadata: file size, total commit count, and oldest recorded commit.
+- **`diddo update`** — Self-update to the latest release (detects Homebrew vs GitHub install; use `--yes` to skip the confirmation prompt).
 
 ## AI Providers
 
