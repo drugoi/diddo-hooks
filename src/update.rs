@@ -121,8 +121,26 @@ pub fn run(assume_yes: bool) -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
     let exe = std::env::current_exe()?;
-    let _install_type = current_install_type(&exe);
-    let _target = release_target();
+    let install_type = current_install_type(&exe);
+    let target = release_target();
+
+    if install_type == InstallType::Homebrew {
+        if Command::new("brew").arg("--version").output().is_err() {
+            return Err("Homebrew update requested but `brew` not found.".into());
+        }
+        if !confirm_update(current, &latest, assume_yes) {
+            return Ok(());
+        }
+        let status = Command::new("brew").args(["upgrade", "diddo"]).status()?;
+        if !status.success() {
+            return Err("Update failed: brew upgrade diddo failed.".into());
+        }
+        println!("Updated to {latest}.");
+        return Ok(());
+    }
+
+    // GitHub path (Task 6)
+    let _ = target;
     let _ = assume_yes;
     Ok(())
 }
