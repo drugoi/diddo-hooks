@@ -140,8 +140,36 @@ pub fn run(assume_yes: bool) -> Result<(), Box<dyn Error>> {
     }
 
     // GitHub path (Task 6)
-    let _ = target;
-    let _ = assume_yes;
+    if !confirm_update(current, &latest, assume_yes) {
+        return Ok(());
+    }
+    let target = match target {
+        Some(t) => t,
+        None => {
+            return Err("No release available for your platform.".into());
+        }
+    };
+    let result = self_update::backends::github::Update::configure()
+        .repo_owner("drugoi")
+        .repo_name("diddo-hooks")
+        .bin_name("diddo")
+        .current_version(current)
+        .target(target)
+        .target_version_tag(&format!("v{latest}"))
+        .no_confirm(true)
+        .show_download_progress(true)
+        .build()
+        .map_err(|e| format!("Could not configure update: {e}"))?
+        .update()
+        .map_err(|e| {
+            format!(
+                "Update failed: could not replace binary ({e}). \
+                 You can download the new version from https://github.com/drugoi/diddo-hooks/releases."
+            )
+        })?;
+    if let self_update::Status::Updated(ver) = result {
+        println!("Updated to {ver}.");
+    }
     Ok(())
 }
 
