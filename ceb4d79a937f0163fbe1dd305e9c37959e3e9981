@@ -1,0 +1,24 @@
+src/update.rs
+  031f54c950956fba 2,93-112
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.8",
+  "base_commit_sha": "ceb4d79a937f0163fbe1dd305e9c37959e3e9981",
+  "prompts": {
+    "031f54c950956fba": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "549db5dd-d1db-426c-8636-6cb6f8e889ce",
+        "model": "default"
+      },
+      "human_author": "Nikita Bayev <nikita@bayev.kz>",
+      "messages": [],
+      "total_additions": 22,
+      "total_deletions": 1,
+      "accepted_lines": 21,
+      "overriden_lines": 0,
+      "messages_url": "https://usegitai.com/cas/f727d3f6b3d5ebec375d630b25dd06e7b37101539f085ecc8d7dca823d307530"
+    }
+  }
+}
