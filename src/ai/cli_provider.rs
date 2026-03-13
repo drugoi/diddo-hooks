@@ -98,10 +98,15 @@ impl AiProvider for CliProvider {
 
 #[allow(dead_code)]
 pub fn detect_installed_tools() -> Vec<CliTool> {
-    [CliTool::Claude, CliTool::Codex, CliTool::Opencode, CliTool::CursorAgent]
-        .into_iter()
-        .filter(|tool| command_exists(tool.binary_name()))
-        .collect()
+    [
+        CliTool::Claude,
+        CliTool::Codex,
+        CliTool::Opencode,
+        CliTool::CursorAgent,
+    ]
+    .into_iter()
+    .filter(|tool| command_exists(tool.binary_name()))
+    .collect()
 }
 
 fn command_exists(binary: &str) -> bool {
@@ -162,10 +167,9 @@ fn is_command_path(path: &Path) -> bool {
     {
         use std::os::unix::fs::PermissionsExt;
 
-        return path
-            .metadata()
+        path.metadata()
             .map(|metadata| metadata.permissions().mode() & 0o111 != 0)
-            .unwrap_or(false);
+            .unwrap_or(false)
     }
 
     #[cfg(not(unix))]

@@ -149,9 +149,9 @@ impl Database {
     }
 
     pub fn get_cached_summary(&self, cache_key: &str) -> Result<Option<String>> {
-        let mut stmt = self.connection.prepare(
-            "SELECT summary FROM ai_summary_cache WHERE cache_key = ?1",
-        )?;
+        let mut stmt = self
+            .connection
+            .prepare("SELECT summary FROM ai_summary_cache WHERE cache_key = ?1")?;
         let mut rows = stmt.query(params![cache_key])?;
         if let Some(row) = rows.next()? {
             let summary: String = row.get(0)?;
@@ -174,11 +174,10 @@ impl Database {
     }
 
     pub fn oldest_commit_date(&self) -> Result<Option<String>> {
-        self.connection.query_row(
-            "SELECT MIN(committed_at) FROM commits",
-            [],
-            |row| row.get(0),
-        )
+        self.connection
+            .query_row("SELECT MIN(committed_at) FROM commits", [], |row| {
+                row.get(0)
+            })
     }
 
     /// Column names of the commits table.
@@ -361,7 +360,13 @@ mod tests {
                     None,
                     false,
                 ),
-                ("author_email".to_string(), "TEXT".to_string(), false, None, false),
+                (
+                    "author_email".to_string(),
+                    "TEXT".to_string(),
+                    false,
+                    None,
+                    false
+                ),
             ]
         );
     }
@@ -466,10 +471,7 @@ mod tests {
         let commits = database.query_date(today).unwrap();
 
         assert_eq!(commits.len(), 1);
-        assert_eq!(
-            commits[0].author_email,
-            Some("me@example.com".to_string())
-        );
+        assert_eq!(commits[0].author_email, Some("me@example.com".to_string()));
     }
 
     #[test]
@@ -581,8 +583,12 @@ mod tests {
         let today = Local::now().date_naive();
         let committed_at = local_datetime_to_utc(today, 12, 0);
 
-        database.insert_commit(&build_commit("aaa1111", "first", committed_at)).unwrap();
-        database.insert_commit(&build_commit("bbb2222", "second", committed_at)).unwrap();
+        database
+            .insert_commit(&build_commit("aaa1111", "first", committed_at))
+            .unwrap();
+        database
+            .insert_commit(&build_commit("bbb2222", "second", committed_at))
+            .unwrap();
 
         assert_eq!(database.commit_count().unwrap(), 2);
     }
@@ -602,8 +608,12 @@ mod tests {
         let earlier = local_datetime_to_utc(yesterday, 8, 0);
         let later = local_datetime_to_utc(today, 14, 0);
 
-        database.insert_commit(&build_commit("aaa1111", "older", earlier)).unwrap();
-        database.insert_commit(&build_commit("bbb2222", "newer", later)).unwrap();
+        database
+            .insert_commit(&build_commit("aaa1111", "older", earlier))
+            .unwrap();
+        database
+            .insert_commit(&build_commit("bbb2222", "newer", later))
+            .unwrap();
 
         let oldest = database.oldest_commit_date().unwrap().unwrap();
         assert_eq!(oldest, earlier.to_rfc3339());

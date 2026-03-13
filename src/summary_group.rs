@@ -22,11 +22,7 @@ pub struct ProfileGroup {
 
 /// Normalizes author_email to a profile key: trim; if empty use "unknown".
 fn profile_key(commit: &Commit) -> String {
-    let key = commit
-        .author_email
-        .as_deref()
-        .unwrap_or("")
-        .trim();
+    let key = commit.author_email.as_deref().unwrap_or("").trim();
     if key.is_empty() {
         "unknown".to_string()
     } else {
@@ -142,8 +138,16 @@ mod tests {
 
         assert_eq!(second.profile_label, "b@y.com");
         assert_eq!(second.repos.len(), 2);
-        let b_repo1 = second.repos.iter().find(|r| r.repo_name == "repo1").unwrap();
-        let b_repo2 = second.repos.iter().find(|r| r.repo_name == "repo2").unwrap();
+        let b_repo1 = second
+            .repos
+            .iter()
+            .find(|r| r.repo_name == "repo1")
+            .unwrap();
+        let b_repo2 = second
+            .repos
+            .iter()
+            .find(|r| r.repo_name == "repo2")
+            .unwrap();
         assert_eq!(b_repo1.commits.len(), 1);
         assert_eq!(b_repo2.commits.len(), 1);
     }
