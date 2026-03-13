@@ -18,8 +18,12 @@ pub fn install_type_from_path(exe_path: &Path, brew_prefix: Option<&Path>) -> In
         return InstallType::Homebrew;
     }
     if let Some(prefix) = brew_prefix {
-        let canonical_exe = exe_path.canonicalize().unwrap_or_else(|_| exe_path.to_path_buf());
-        let canonical_prefix = prefix.canonicalize().unwrap_or_else(|_| prefix.to_path_buf());
+        let canonical_exe = exe_path
+            .canonicalize()
+            .unwrap_or_else(|_| exe_path.to_path_buf());
+        let canonical_prefix = prefix
+            .canonicalize()
+            .unwrap_or_else(|_| prefix.to_path_buf());
         if canonical_exe.starts_with(&canonical_prefix) {
             return InstallType::Homebrew;
         }
@@ -29,7 +33,9 @@ pub fn install_type_from_path(exe_path: &Path, brew_prefix: Option<&Path>) -> In
 
 /// Detects install type (exe path and brew --prefix).
 pub fn current_install_type(exe_path: &Path) -> InstallType {
-    let canonical = exe_path.canonicalize().unwrap_or_else(|_| exe_path.to_path_buf());
+    let canonical = exe_path
+        .canonicalize()
+        .unwrap_or_else(|_| exe_path.to_path_buf());
     let brew_prefix = Command::new("brew")
         .arg("--prefix")
         .output()
@@ -169,16 +175,13 @@ pub fn run(assume_yes: bool) -> Result<(), Box<dyn Error>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{install_type_from_path, is_newer, release_target, InstallType};
+    use super::{InstallType, install_type_from_path, is_newer, release_target};
     use std::path::Path;
 
     #[test]
     fn install_type_homebrew_when_path_contains_cellar() {
         let path = Path::new("/opt/homebrew/Cellar/diddo/0.5.0/bin/diddo");
-        assert_eq!(
-            install_type_from_path(path, None),
-            InstallType::Homebrew
-        );
+        assert_eq!(install_type_from_path(path, None), InstallType::Homebrew);
     }
 
     #[test]
@@ -210,7 +213,10 @@ mod tests {
     #[test]
     fn release_target_returns_some_for_supported_platform() {
         let target = release_target();
-        assert!(target.is_some(), "release_target should be Some on supported platform");
+        assert!(
+            target.is_some(),
+            "release_target should be Some on supported platform"
+        );
         let t = target.unwrap();
         assert!(
             t.contains("darwin") || t.contains("linux") || t.contains("windows"),
