@@ -678,8 +678,7 @@ where
                     if let Some(ref w) = attempt.warning {
                         warnings.push(w.clone());
                     }
-                    if let (Some(ref key), Some(ref s)) =
-                        (cache_key_opt.as_ref(), attempt.summary.as_ref())
+                    if let (Some(key), Some(s)) = (cache_key_opt.as_ref(), attempt.summary.as_ref())
                     {
                         let _ = database.set_cached_summary(key, s);
                     }
@@ -701,8 +700,7 @@ where
                     if let Some(ref w) = attempt.warning {
                         warnings.push(w.clone());
                     }
-                    if let (Some(ref key), Some(ref s)) =
-                        (cache_key_opt.as_ref(), attempt.summary.as_ref())
+                    if let (Some(key), Some(s)) = (cache_key_opt.as_ref(), attempt.summary.as_ref())
                     {
                         let _ = database.set_cached_summary(key, s);
                     }
@@ -718,7 +716,7 @@ where
 
         let combined = groups
             .iter()
-            .filter_map(|g| g.ai_summary.as_ref().map(String::as_str))
+            .filter_map(|g| g.ai_summary.as_deref())
             .collect::<Vec<_>>()
             .join("\n\n");
         let combined_summary = if combined.is_empty() {

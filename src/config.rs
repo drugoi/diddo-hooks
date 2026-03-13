@@ -52,7 +52,7 @@ impl AiConfig {
 
     pub fn resolved_provider(&self) -> Option<String> {
         self.normalized_provider()
-            .or_else(|| infer_provider_from_environment())
+            .or_else(infer_provider_from_environment)
     }
 
     pub fn resolved_model(&self) -> Option<String> {
