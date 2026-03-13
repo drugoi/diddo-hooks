@@ -1306,7 +1306,7 @@ mod tests {
         );
         let table = render_empty_summary(
             "2026-03-10 (today)",
-            summary_request_from_cli(parse_cli(["diddo", "--table"]).unwrap())
+            summary_request_from_cli(parse_cli(["diddo", "today", "--table"]).unwrap())
                 .unwrap()
                 .1,
         );
