@@ -80,6 +80,20 @@ struct SummaryArgs {
 }
 
 #[derive(Args, Debug, Clone, Copy, PartialEq, Eq)]
+struct RangeArgs {
+    /// Start date in YYYY-MM-DD or DD.MM.YYYY format.
+    #[arg(long, value_parser = parse_naive_date)]
+    from: NaiveDate,
+
+    /// End date in YYYY-MM-DD or DD.MM.YYYY format. Defaults to today.
+    #[arg(long, value_parser = parse_naive_date)]
+    to: Option<NaiveDate>,
+
+    #[command(flatten)]
+    summary: SummaryArgs,
+}
+
+#[derive(Args, Debug, Clone, Copy, PartialEq, Eq)]
 struct UpdateArgs {
     /// Apply update without prompting.
     #[arg(long, alias = "assume-yes")]
@@ -94,6 +108,10 @@ enum Commands {
     Yesterday(SummaryArgs),
     /// Show this week's summary.
     Week(SummaryArgs),
+    /// Show this month's summary.
+    Month(SummaryArgs),
+    /// Show a summary for a custom date range.
+    Range(RangeArgs),
     /// Show summary for the last 24 hours.
     Standup(SummaryArgs),
     /// Install the global post-commit hook.
@@ -117,10 +135,15 @@ struct ParsedCli {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SummaryPeriod {
+enum SummarySelection {
     Today,
     Yesterday,
     Week,
+    Month,
+    Range {
+        from: NaiveDate,
+        to: Option<NaiveDate>,
+    },
     Standup,
 }
 
@@ -132,12 +155,18 @@ enum OutputFormat {
     Table,
 }
 
+pub(crate) const RANGE_DATE_FORMATS: &str = "YYYY-MM-DD or DD.MM.YYYY";
+
+pub(crate) fn range_date_format_error() -> String {
+    format!("Dates must use {RANGE_DATE_FORMATS} format.")
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SummaryWindow {
     from: NaiveDate,
     to: NaiveDate,
     date_label: String,
-    ai_period: &'static str,
+    ai_period: String,
     exact_bounds: Option<(DateTime<Utc>, DateTime<Utc>)>,
 }
 
@@ -192,6 +221,27 @@ where
     })
 }
 
+fn parse_naive_date(value: &str) -> Result<NaiveDate, String> {
+    parse_supported_date(value)
+        .map_err(|_| format!("invalid date '{value}', expected {RANGE_DATE_FORMATS}"))
+}
+
+pub(crate) fn parse_supported_date(value: &str) -> Result<NaiveDate, String> {
+    let value = value.trim();
+
+    ["%Y-%m-%d", "%d.%m.%Y"]
+        .into_iter()
+        .find_map(|format| NaiveDate::parse_from_str(value, format).ok())
+        .ok_or_else(|| format!("expected {RANGE_DATE_FORMATS}"))
+}
+
+fn parse_interactive_selection(selection: &str) -> Result<ParsedCli, clap::Error> {
+    let args = std::iter::once("diddo".to_string())
+        .chain(selection.split_whitespace().map(str::to_string))
+        .collect::<Vec<_>>();
+    parse_cli(args)
+}
+
 fn main() {
     let raw_args: Vec<OsString> = std::env::args_os().collect();
     let is_bare_invocation = raw_args.len() == 1
@@ -210,7 +260,7 @@ fn main() {
                 std::process::exit(1);
             }
         };
-        let cli = parse_cli(["diddo", selected.as_str()]).unwrap_or_else(|error| error.exit());
+        let cli = parse_interactive_selection(&selected).unwrap_or_else(|error| error.exit());
         run_cli(cli);
         return;
     }
@@ -322,12 +372,12 @@ fn format_metadata(database: &db::Database, size_bytes: u64) -> Result<String, B
 }
 
 fn run_summary_command(cli: ParsedCli) -> Result<(), Box<dyn Error>> {
-    let (period, summary_args) = summary_request_from_cli(cli)
+    let (selection, summary_args) = summary_request_from_cli(cli)
         .ok_or_else(|| std::io::Error::other("summary command was not selected"))?;
     let paths = paths::AppPaths::new()?;
     let database = db::Database::open(&paths.db_path)?;
     let today = Local::now().date_naive();
-    let window = resolve_summary_window(period, today);
+    let window = resolve_summary_window(selection, today)?;
     let commits = load_commits_for_window(&database, &window)?;
     let rendered = render_summary_output(
         &database,
@@ -346,13 +396,21 @@ fn run_summary_command(cli: ParsedCli) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn summary_request_from_cli(cli: ParsedCli) -> Option<(SummaryPeriod, SummaryArgs)> {
+fn summary_request_from_cli(cli: ParsedCli) -> Option<(SummarySelection, SummaryArgs)> {
     match cli.command {
-        None => Some((SummaryPeriod::Today, cli.summary)),
-        Some(Commands::Today(summary)) => Some((SummaryPeriod::Today, summary)),
-        Some(Commands::Yesterday(summary)) => Some((SummaryPeriod::Yesterday, summary)),
-        Some(Commands::Week(summary)) => Some((SummaryPeriod::Week, summary)),
-        Some(Commands::Standup(summary)) => Some((SummaryPeriod::Standup, summary)),
+        None => Some((SummarySelection::Today, cli.summary)),
+        Some(Commands::Today(summary)) => Some((SummarySelection::Today, summary)),
+        Some(Commands::Yesterday(summary)) => Some((SummarySelection::Yesterday, summary)),
+        Some(Commands::Week(summary)) => Some((SummarySelection::Week, summary)),
+        Some(Commands::Month(summary)) => Some((SummarySelection::Month, summary)),
+        Some(Commands::Standup(summary)) => Some((SummarySelection::Standup, summary)),
+        Some(Commands::Range(range)) => Some((
+            SummarySelection::Range {
+                from: range.from,
+                to: range.to,
+            },
+            range.summary,
+        )),
         Some(
             Commands::Init
             | Commands::Uninstall
@@ -364,47 +422,82 @@ fn summary_request_from_cli(cli: ParsedCli) -> Option<(SummaryPeriod, SummaryArg
     }
 }
 
-fn resolve_summary_window(period: SummaryPeriod, today: NaiveDate) -> SummaryWindow {
-    match period {
-        SummaryPeriod::Today => SummaryWindow {
+fn resolve_summary_window(
+    selection: SummarySelection,
+    today: NaiveDate,
+) -> Result<SummaryWindow, Box<dyn Error>> {
+    let window = match selection {
+        SummarySelection::Today => SummaryWindow {
             from: today,
             to: today,
             date_label: format!("{today} (today)"),
-            ai_period: "today",
+            ai_period: "today".to_string(),
             exact_bounds: None,
         },
-        SummaryPeriod::Yesterday => {
+        SummarySelection::Yesterday => {
             let yesterday = today - Duration::days(1);
             SummaryWindow {
                 from: yesterday,
                 to: yesterday,
                 date_label: format!("{yesterday} (yesterday)"),
-                ai_period: "yesterday",
+                ai_period: "yesterday".to_string(),
                 exact_bounds: None,
             }
         }
-        SummaryPeriod::Week => {
+        SummarySelection::Week => {
             let week_start = today - Duration::days(today.weekday().num_days_from_monday().into());
             SummaryWindow {
                 from: week_start,
                 to: today,
                 date_label: format!("{week_start} to {today} (week)"),
-                ai_period: "this week",
+                ai_period: "this week".to_string(),
                 exact_bounds: None,
             }
         }
-        SummaryPeriod::Standup => {
+        SummarySelection::Standup => {
             let now = Local::now();
             let from = now - Duration::hours(24);
             SummaryWindow {
                 from: from.date_naive(),
                 to: today,
                 date_label: "last 24 hours (standup)".to_string(),
-                ai_period: "the last 24 hours",
+                ai_period: "the last 24 hours".to_string(),
                 exact_bounds: Some((from.with_timezone(&Utc), now.with_timezone(&Utc))),
             }
         }
-    }
+        SummarySelection::Month => {
+            let month_start = today.with_day(1).ok_or_else(|| {
+                std::io::Error::other("failed to resolve the start of the current month")
+            })?;
+            SummaryWindow {
+                from: month_start,
+                to: today,
+                date_label: format!("{month_start} to {today} (month)"),
+                ai_period: "this month".to_string(),
+                exact_bounds: None,
+            }
+        }
+        SummarySelection::Range { from, to } => {
+            let to = to.unwrap_or(today);
+            if from > to {
+                return Err(std::io::Error::other(
+                    "invalid date range: --from must be on or before --to",
+                )
+                .into());
+            }
+
+            let label = format!("{from} to {to}");
+            SummaryWindow {
+                from,
+                to,
+                date_label: label.clone(),
+                ai_period: label,
+                exact_bounds: None,
+            }
+        }
+    };
+
+    Ok(window)
 }
 
 fn load_commits_for_window(
@@ -531,7 +624,7 @@ where
     }
 
     let mut groups = summary_group::group_commits_by_profile_then_repo(&commits);
-    let period = window.ai_period;
+    let period = window.ai_period.as_str();
 
     let (_, warning) = if should_try_ai_summary(summary_args) {
         let config = load_config()?;
@@ -808,17 +901,48 @@ mod tests {
     use chrono::{NaiveDate, TimeZone, Utc};
 
     use super::{
-        AiSummaryAttempt, Commands, OutputFormat, ParsedCli, SummaryArgs, SummaryPeriod,
+        AiSummaryAttempt, Commands, OutputFormat, ParsedCli, SummaryArgs, SummarySelection,
         build_summary_data, compute_cache_key, format_commit_time, format_config_paths,
-        format_file_size, format_metadata, output_format, parse_cli, render_empty_summary,
-        render_summary_output, resolve_summary_window, should_try_ai_summary,
-        summary_request_from_cli, try_ai_summary,
+        format_file_size, format_metadata, output_format, parse_cli, parse_interactive_selection,
+        parse_supported_date, range_date_format_error, render_empty_summary, render_summary_output,
+        resolve_summary_window, should_try_ai_summary, summary_request_from_cli, try_ai_summary,
     };
     use crate::{
         ai::{AiError, AiProvider},
         config::{AiCliConfig, AiConfig, AppConfig},
         paths::AppPaths,
     };
+
+    #[test]
+    fn parse_supported_date_accepts_iso_and_dotted_formats() {
+        assert_eq!(
+            parse_supported_date("2026-03-01").unwrap(),
+            NaiveDate::from_ymd_opt(2026, 3, 1).unwrap()
+        );
+        assert_eq!(
+            parse_supported_date("01.03.2026").unwrap(),
+            NaiveDate::from_ymd_opt(2026, 3, 1).unwrap()
+        );
+    }
+
+    #[test]
+    fn parse_supported_date_trims_whitespace() {
+        assert_eq!(
+            parse_supported_date("  01.03.2026  ").unwrap(),
+            NaiveDate::from_ymd_opt(2026, 3, 1).unwrap()
+        );
+    }
+
+    #[test]
+    fn parse_supported_date_rejects_invalid_strings_with_shared_error_text() {
+        let error = parse_supported_date("not-a-date").unwrap_err();
+
+        assert_eq!(error, format!("expected {}", super::RANGE_DATE_FORMATS));
+        assert_eq!(
+            range_date_format_error(),
+            "Dates must use YYYY-MM-DD or DD.MM.YYYY format."
+        );
+    }
 
     #[test]
     fn cache_key_is_deterministic_and_different_for_different_inputs() {
@@ -873,9 +997,10 @@ mod tests {
             .unwrap();
 
         let window = resolve_summary_window(
-            SummaryPeriod::Today,
+            SummarySelection::Today,
             NaiveDate::from_ymd_opt(2026, 3, 10).unwrap(),
-        );
+        )
+        .unwrap();
         let rendered = render_summary_output(
             &database,
             SummaryArgs {
@@ -972,6 +1097,17 @@ mod tests {
         let week = parse_cli(["diddo", "week", "--raw"]).unwrap();
         let standup = parse_cli(["diddo", "standup", "--md"]).unwrap();
         let today_no_cache = parse_cli(["diddo", "today", "--no-cache"]).unwrap();
+        let month = parse_cli(["diddo", "month", "--md"]).unwrap();
+        let range = parse_cli([
+            "diddo",
+            "range",
+            "--from",
+            "2026-03-01",
+            "--to",
+            "2026-03-11",
+            "--raw",
+        ])
+        .unwrap();
 
         assert_eq!(
             today.command,
@@ -1021,6 +1157,30 @@ mod tests {
                 json: false,
                 table: false,
                 no_cache: true,
+            }))
+        );
+        assert_eq!(
+            month.command,
+            Some(Commands::Month(super::SummaryArgs {
+                md: true,
+                raw: false,
+                json: false,
+                table: false,
+                no_cache: false,
+            }))
+        );
+        assert_eq!(
+            range.command,
+            Some(Commands::Range(super::RangeArgs {
+                from: NaiveDate::from_ymd_opt(2026, 3, 1).unwrap(),
+                to: Some(NaiveDate::from_ymd_opt(2026, 3, 11).unwrap()),
+                summary: super::SummaryArgs {
+                    md: false,
+                    raw: true,
+                    json: false,
+                    table: false,
+                    no_cache: false,
+                },
             }))
         );
     }
@@ -1081,26 +1241,111 @@ mod tests {
     }
 
     #[test]
+    fn rejects_range_without_from() {
+        let error = parse_cli(["diddo", "range"]).unwrap_err();
+
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_range_date_format() {
+        let error = parse_cli(["diddo", "range", "--from", "03-01-2026"]).unwrap_err();
+
+        assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+        assert!(
+            error.to_string().contains("YYYY-MM-DD or DD.MM.YYYY"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn parses_range_dates_in_dotted_format() {
+        let cli = parse_cli(["diddo", "range", "--from", "01.03.2026"]).unwrap();
+
+        assert_eq!(
+            cli.command,
+            Some(Commands::Range(super::RangeArgs {
+                from: NaiveDate::from_ymd_opt(2026, 3, 1).unwrap(),
+                to: None,
+                summary: SummaryArgs::default(),
+            }))
+        );
+    }
+
+    #[test]
+    fn parses_range_dates_in_mixed_formats() {
+        let cli = parse_cli([
+            "diddo",
+            "range",
+            "--from",
+            "01.03.2026",
+            "--to",
+            "2026-03-11",
+        ])
+        .unwrap();
+
+        assert_eq!(
+            cli.command,
+            Some(Commands::Range(super::RangeArgs {
+                from: NaiveDate::from_ymd_opt(2026, 3, 1).unwrap(),
+                to: Some(NaiveDate::from_ymd_opt(2026, 3, 11).unwrap()),
+                summary: SummaryArgs::default(),
+            }))
+        );
+    }
+
+    #[test]
+    fn parses_interactive_selection_for_range_command() {
+        let cli = parse_interactive_selection("range --from 2026-03-01 --to 2026-03-05").unwrap();
+
+        assert_eq!(
+            cli.command,
+            Some(Commands::Range(super::RangeArgs {
+                from: NaiveDate::from_ymd_opt(2026, 3, 1).unwrap(),
+                to: Some(NaiveDate::from_ymd_opt(2026, 3, 5).unwrap()),
+                summary: SummaryArgs::default(),
+            }))
+        );
+    }
+
+    #[test]
+    fn parses_interactive_selection_for_month_command() {
+        let cli = parse_interactive_selection("month").unwrap();
+
+        assert_eq!(cli.command, Some(Commands::Month(SummaryArgs::default())));
+    }
+
+    #[test]
     fn derives_summary_request_from_default_and_subcommand_forms() {
         let today = summary_request_from_cli(parse_cli(["diddo"]).unwrap());
         let explicit_today = summary_request_from_cli(parse_cli(["diddo", "today"]).unwrap());
         let yesterday = summary_request_from_cli(parse_cli(["diddo", "yesterday"]).unwrap());
         let week = summary_request_from_cli(parse_cli(["diddo", "week", "--md"]).unwrap());
+        let month = summary_request_from_cli(parse_cli(["diddo", "month"]).unwrap());
+        let range = summary_request_from_cli(
+            parse_cli(["diddo", "range", "--from", "2026-03-01"]).unwrap(),
+        );
         let init = summary_request_from_cli(parse_cli(["diddo", "init"]).unwrap());
 
-        assert_eq!(today, Some((SummaryPeriod::Today, SummaryArgs::default())));
+        assert_eq!(
+            today,
+            Some((SummarySelection::Today, SummaryArgs::default()))
+        );
         assert_eq!(
             explicit_today,
-            Some((SummaryPeriod::Today, SummaryArgs::default()))
+            Some((SummarySelection::Today, SummaryArgs::default()))
         );
         assert_eq!(
             yesterday,
-            Some((SummaryPeriod::Yesterday, SummaryArgs::default()))
+            Some((SummarySelection::Yesterday, SummaryArgs::default()))
         );
         assert_eq!(
             week,
             Some((
-                SummaryPeriod::Week,
+                SummarySelection::Week,
                 SummaryArgs {
                     md: true,
                     raw: false,
@@ -1110,6 +1355,20 @@ mod tests {
                 }
             ))
         );
+        assert_eq!(
+            month,
+            Some((SummarySelection::Month, SummaryArgs::default()))
+        );
+        assert_eq!(
+            range,
+            Some((
+                SummarySelection::Range {
+                    from: NaiveDate::from_ymd_opt(2026, 3, 1).unwrap(),
+                    to: None,
+                },
+                SummaryArgs::default(),
+            ))
+        );
         assert_eq!(init, None);
     }
 
@@ -1117,12 +1376,81 @@ mod tests {
     fn resolves_week_window_from_monday_through_today() {
         let today = NaiveDate::from_ymd_opt(2026, 3, 12).unwrap();
 
-        let window = resolve_summary_window(SummaryPeriod::Week, today);
+        let window = resolve_summary_window(SummarySelection::Week, today).unwrap();
 
         assert_eq!(window.from, NaiveDate::from_ymd_opt(2026, 3, 9).unwrap());
         assert_eq!(window.to, today);
         assert_eq!(window.date_label, "2026-03-09 to 2026-03-12 (week)");
         assert_eq!(window.ai_period, "this week");
+    }
+
+    #[test]
+    fn resolves_month_window_from_first_day_through_today() {
+        let today = NaiveDate::from_ymd_opt(2026, 3, 12).unwrap();
+
+        let window = resolve_summary_window(SummarySelection::Month, today).unwrap();
+
+        assert_eq!(window.from, NaiveDate::from_ymd_opt(2026, 3, 1).unwrap());
+        assert_eq!(window.to, today);
+        assert_eq!(window.date_label, "2026-03-01 to 2026-03-12 (month)");
+        assert_eq!(window.ai_period, "this month");
+    }
+
+    #[test]
+    fn resolves_range_window_with_explicit_end_date() {
+        let today = NaiveDate::from_ymd_opt(2026, 3, 12).unwrap();
+
+        let window = resolve_summary_window(
+            SummarySelection::Range {
+                from: NaiveDate::from_ymd_opt(2026, 3, 1).unwrap(),
+                to: Some(NaiveDate::from_ymd_opt(2026, 3, 11).unwrap()),
+            },
+            today,
+        )
+        .unwrap();
+
+        assert_eq!(window.from, NaiveDate::from_ymd_opt(2026, 3, 1).unwrap());
+        assert_eq!(window.to, NaiveDate::from_ymd_opt(2026, 3, 11).unwrap());
+        assert_eq!(window.date_label, "2026-03-01 to 2026-03-11");
+        assert_eq!(window.ai_period, "2026-03-01 to 2026-03-11");
+    }
+
+    #[test]
+    fn resolves_range_window_without_end_date_by_defaulting_to_today() {
+        let today = NaiveDate::from_ymd_opt(2026, 3, 12).unwrap();
+
+        let window = resolve_summary_window(
+            SummarySelection::Range {
+                from: NaiveDate::from_ymd_opt(2026, 3, 1).unwrap(),
+                to: None,
+            },
+            today,
+        )
+        .unwrap();
+
+        assert_eq!(window.from, NaiveDate::from_ymd_opt(2026, 3, 1).unwrap());
+        assert_eq!(window.to, today);
+        assert_eq!(window.date_label, "2026-03-01 to 2026-03-12");
+        assert_eq!(window.ai_period, "2026-03-01 to 2026-03-12");
+    }
+
+    #[test]
+    fn rejects_range_window_when_from_is_after_to() {
+        let today = NaiveDate::from_ymd_opt(2026, 3, 12).unwrap();
+
+        let error = resolve_summary_window(
+            SummarySelection::Range {
+                from: NaiveDate::from_ymd_opt(2026, 3, 12).unwrap(),
+                to: Some(NaiveDate::from_ymd_opt(2026, 3, 1).unwrap()),
+            },
+            today,
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "invalid date range: --from must be on or before --to"
+        );
     }
 
     #[test]
@@ -1284,6 +1612,10 @@ mod tests {
     #[test]
     fn renders_useful_empty_period_messages_for_all_output_formats() {
         let terminal = render_empty_summary("2026-03-10 (today)", SummaryArgs::default());
+        let month_terminal =
+            render_empty_summary("2026-03-01 to 2026-03-12 (month)", SummaryArgs::default());
+        let range_terminal =
+            render_empty_summary("2026-03-01 to 2026-03-11", SummaryArgs::default());
         let markdown = render_empty_summary(
             "2026-03-10 (today)",
             SummaryArgs {
@@ -1312,6 +1644,14 @@ mod tests {
         );
 
         assert_eq!(terminal, "No commits recorded for 2026-03-10 (today).");
+        assert_eq!(
+            month_terminal,
+            "No commits recorded for 2026-03-01 to 2026-03-12 (month)."
+        );
+        assert_eq!(
+            range_terminal,
+            "No commits recorded for 2026-03-01 to 2026-03-11."
+        );
         assert!(!terminal.contains("Profile:"));
         assert_eq!(
             markdown,
@@ -1336,9 +1676,10 @@ mod tests {
             sample_commit("def2", "repo-a", "/tmp/repo-a", 10, 30),
         ];
         let window = resolve_summary_window(
-            SummaryPeriod::Today,
+            SummarySelection::Today,
             NaiveDate::from_ymd_opt(2026, 3, 10).unwrap(),
-        );
+        )
+        .unwrap();
         let database = crate::db::Database::open_in_memory().unwrap();
         let rendered = render_summary_output(
             &database,
@@ -1367,9 +1708,10 @@ mod tests {
     #[test]
     fn empty_summary_output_does_not_depend_on_config_loading() {
         let window = resolve_summary_window(
-            SummaryPeriod::Today,
+            SummarySelection::Today,
             NaiveDate::from_ymd_opt(2026, 3, 10).unwrap(),
-        );
+        )
+        .unwrap();
 
         let database = crate::db::Database::open_in_memory().unwrap();
         let rendered = render_summary_output(
@@ -1533,9 +1875,10 @@ mod tests {
             commit_with_author("b1", "repo-b", "/tmp/repo-b", 10, 0, Some("bob@y.com")),
         ];
         let window = resolve_summary_window(
-            SummaryPeriod::Today,
+            SummarySelection::Today,
             NaiveDate::from_ymd_opt(2026, 3, 10).unwrap(),
-        );
+        )
+        .unwrap();
         let database = crate::db::Database::open_in_memory().unwrap();
         let provider = FailFirstProvider::new("Bob summary.", "AI failed for first profile");
         let rendered = render_summary_output(
@@ -1634,7 +1977,7 @@ mod tests {
 
         assert_eq!(
             standup,
-            Some((SummaryPeriod::Standup, SummaryArgs::default()))
+            Some((SummarySelection::Standup, SummaryArgs::default()))
         );
     }
 
@@ -1642,7 +1985,7 @@ mod tests {
     fn resolves_standup_window_with_exact_24h_bounds() {
         let today = NaiveDate::from_ymd_opt(2026, 3, 12).unwrap();
 
-        let window = resolve_summary_window(SummaryPeriod::Standup, today);
+        let window = resolve_summary_window(SummarySelection::Standup, today).unwrap();
 
         assert_eq!(window.date_label, "last 24 hours (standup)");
         assert_eq!(window.ai_period, "the last 24 hours");
@@ -1659,9 +2002,10 @@ mod tests {
             sample_commit("def2", "repo-b", "/tmp/repo-b", 10, 30),
         ];
         let window = resolve_summary_window(
-            SummaryPeriod::Standup,
+            SummarySelection::Standup,
             NaiveDate::from_ymd_opt(2026, 3, 10).unwrap(),
-        );
+        )
+        .unwrap();
         let database = crate::db::Database::open_in_memory().unwrap();
         let rendered = render_summary_output(
             &database,
@@ -1684,9 +2028,10 @@ mod tests {
     #[test]
     fn standup_renders_empty_period_message_when_no_commits() {
         let window = resolve_summary_window(
-            SummaryPeriod::Standup,
+            SummarySelection::Standup,
             NaiveDate::from_ymd_opt(2026, 3, 10).unwrap(),
-        );
+        )
+        .unwrap();
         let database = crate::db::Database::open_in_memory().unwrap();
         let rendered = render_summary_output(
             &database,
@@ -1710,9 +2055,10 @@ mod tests {
     fn standup_raw_skips_ai_and_shows_grouped_commits() {
         let commits = vec![sample_commit("abc1", "repo-a", "/tmp/repo-a", 9, 15)];
         let window = resolve_summary_window(
-            SummaryPeriod::Standup,
+            SummarySelection::Standup,
             NaiveDate::from_ymd_opt(2026, 3, 10).unwrap(),
-        );
+        )
+        .unwrap();
         let database = crate::db::Database::open_in_memory().unwrap();
         let rendered = render_summary_output(
             &database,
@@ -1739,9 +2085,10 @@ mod tests {
     fn standup_json_output_includes_date_label() {
         let commits = vec![sample_commit("abc1", "repo-a", "/tmp/repo-a", 9, 15)];
         let window = resolve_summary_window(
-            SummaryPeriod::Standup,
+            SummarySelection::Standup,
             NaiveDate::from_ymd_opt(2026, 3, 10).unwrap(),
-        );
+        )
+        .unwrap();
         let database = crate::db::Database::open_in_memory().unwrap();
         let rendered = render_summary_output(
             &database,
@@ -1774,9 +2121,10 @@ mod tests {
             sample_commit("ghi3", "repo-b", "/tmp/repo-b", 11, 0),
         ];
         let window = resolve_summary_window(
-            SummaryPeriod::Today,
+            SummarySelection::Today,
             NaiveDate::from_ymd_opt(2026, 3, 10).unwrap(),
-        );
+        )
+        .unwrap();
         let (_, summary_args) =
             summary_request_from_cli(parse_cli(["diddo", "today", "--table"]).unwrap()).unwrap();
         let database = crate::db::Database::open_in_memory().unwrap();
@@ -1806,9 +2154,10 @@ mod tests {
             sample_commit("ghi3", "repo-b", "/tmp/repo-b", 11, 0),
         ];
         let window = resolve_summary_window(
-            SummaryPeriod::Today,
+            SummarySelection::Today,
             NaiveDate::from_ymd_opt(2026, 3, 10).unwrap(),
-        );
+        )
+        .unwrap();
         let database = crate::db::Database::open_in_memory().unwrap();
         let rendered = render_summary_output(
             &database,
@@ -1842,9 +2191,10 @@ mod tests {
             sample_commit("def2", "repo-b", "/tmp/repo-b", 10, 30),
         ];
         let window = resolve_summary_window(
-            SummaryPeriod::Today,
+            SummarySelection::Today,
             NaiveDate::from_ymd_opt(2026, 3, 10).unwrap(),
-        );
+        )
+        .unwrap();
         let database = crate::db::Database::open_in_memory().unwrap();
         let rendered = render_summary_output(
             &database,
@@ -1876,9 +2226,10 @@ mod tests {
             sample_commit("def2", "repo-b", "/tmp/repo-b", 10, 30),
         ];
         let window = resolve_summary_window(
-            SummaryPeriod::Today,
+            SummarySelection::Today,
             NaiveDate::from_ymd_opt(2026, 3, 10).unwrap(),
-        );
+        )
+        .unwrap();
         let database = crate::db::Database::open_in_memory().unwrap();
         let rendered = render_summary_output(
             &database,
@@ -1909,9 +2260,10 @@ mod tests {
             sample_commit("def2", "repo-b", "/tmp/repo-b", 10, 30),
         ];
         let window = resolve_summary_window(
-            SummaryPeriod::Today,
+            SummarySelection::Today,
             NaiveDate::from_ymd_opt(2026, 3, 10).unwrap(),
-        );
+        )
+        .unwrap();
         let database = crate::db::Database::open_in_memory().unwrap();
         let rendered = render_summary_output(
             &database,
@@ -1940,17 +2292,26 @@ mod tests {
         let today = NaiveDate::from_ymd_opt(2026, 3, 12).unwrap();
 
         assert!(
-            resolve_summary_window(SummaryPeriod::Today, today)
+            resolve_summary_window(SummarySelection::Today, today)
+                .unwrap()
                 .exact_bounds
                 .is_none()
         );
         assert!(
-            resolve_summary_window(SummaryPeriod::Yesterday, today)
+            resolve_summary_window(SummarySelection::Yesterday, today)
+                .unwrap()
                 .exact_bounds
                 .is_none()
         );
         assert!(
-            resolve_summary_window(SummaryPeriod::Week, today)
+            resolve_summary_window(SummarySelection::Week, today)
+                .unwrap()
+                .exact_bounds
+                .is_none()
+        );
+        assert!(
+            resolve_summary_window(SummarySelection::Month, today)
+                .unwrap()
                 .exact_bounds
                 .is_none()
         );

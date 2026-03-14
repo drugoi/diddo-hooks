@@ -119,6 +119,7 @@ Hooks dir: C:\Users\you\AppData\Roaming\diddo\hooks
 ## Usage
 
 Run `diddo` in a terminal to launch **interactive mode** — an arrow-key menu of all available commands. Any `--` flags without a subcommand (e.g. `diddo --table`, `diddo --md`) also launch interactive mode; the flags are ignored.
+Interactive mode includes direct shortcuts for `month` and a `range` form that collects `from` and optional `to` dates in either `YYYY-MM-DD` or `DD.MM.YYYY` before launching the command.
 
 Show summaries:
 
@@ -126,6 +127,10 @@ Show summaries:
 diddo today
 diddo yesterday
 diddo week
+diddo month
+diddo range --from 2026-03-01
+diddo range --from 01.03.2026 --to 11.03.2026
+diddo range --from 2026-03-01 --to 2026-03-11
 diddo standup
 ```
 
@@ -134,6 +139,11 @@ Output modes (require a subcommand):
 ```bash
 diddo today --md
 diddo today --table
+diddo yesterday --json
+diddo week --raw
+diddo month --md
+diddo range --from 2026-03-01 --json
+diddo range --from 2026-03-01 --to 2026-03-11 --raw
 diddo today --no-cache
 diddo yesterday --json
 diddo yesterday --table
@@ -172,6 +182,11 @@ Current CLI behavior:
 - `diddo` without a subcommand launches interactive mode in a terminal; any `--` flags are ignored
 - `diddo today`, `diddo yesterday`, `diddo week`, `diddo standup` run the corresponding summary directly
 - `diddo standup` shows commits from the last 24 hours (`[now - 24h, now]`), useful when your daily meeting is in the afternoon
+- `diddo` and `diddo today` are equivalent
+- `diddo month` shows the current calendar month from day 1 through today
+- `diddo range --from YYYY-MM-DD|DD.MM.YYYY [--to YYYY-MM-DD|DD.MM.YYYY]` shows an inclusive custom date range
+- `diddo range --from ...` defaults `--to` to today's local date
+- `range` accepts both `YYYY-MM-DD` and `DD.MM.YYYY` on input, and normalizes output labels back to `YYYY-MM-DD`
 - Output flags (`--md`, `--json`, `--raw`, `--table`, `--no-cache`) only take effect with a subcommand
 - `--table` is mutually exclusive with `--md`, `--json`, and `--raw`
 - `--raw` skips AI and shows grouped commit data without the activity table
@@ -248,7 +263,7 @@ Commits:
 Return plain text only. Keep it brief and useful, in 2 short paragraphs max.
 ```
 
-`{period}` is e.g. today, yesterday, or this week; `{n}` is the commit count. The list is one line per commit in the format above.
+`{period}` is e.g. today, yesterday, this week, this month, or a concrete date span like `2026-03-01 to 2026-03-11`; `{n}` is the commit count. The list is one line per commit in the format above.
 
 ## Config File
 
