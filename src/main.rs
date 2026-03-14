@@ -27,8 +27,6 @@ use std::{
 struct HelpCli {
     #[command(subcommand)]
     command: Option<Commands>,
-    #[command(flatten)]
-    summary: SummaryArgs,
 }
 
 #[derive(Parser, Debug)]
@@ -56,7 +54,7 @@ struct TodayCli {
 #[derive(Args, Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[command(group(
     ArgGroup::new("output")
-        .args(["md", "raw", "json"])
+        .args(["md", "raw", "json", "table"])
         .multiple(false)
 ))]
 struct SummaryArgs {
@@ -71,6 +69,10 @@ struct SummaryArgs {
     /// Output as JSON.
     #[arg(long)]
     json: bool,
+
+    /// Output repository activity as a table.
+    #[arg(long)]
+    table: bool,
 
     /// Skip cache and force a fresh AI summary.
     #[arg(long)]
@@ -150,6 +152,7 @@ enum OutputFormat {
     Terminal,
     Markdown,
     Json,
+    Table,
 }
 
 pub(crate) const RANGE_DATE_FORMATS: &str = "YYYY-MM-DD or DD.MM.YYYY";
@@ -186,18 +189,29 @@ where
 {
     let args: Vec<OsString> = args.into_iter().map(Into::into).collect();
     let second = args.get(1).and_then(|arg| arg.to_str());
+    let only_option_args = args
+        .iter()
+        .skip(1)
+        .all(|arg| arg.to_str().is_some_and(|s| s.starts_with('-')));
 
     if matches!(second, Some("-h" | "--help" | "-V" | "--version")) {
         return HelpCli::try_parse_from(args).map(|cli| ParsedCli {
             command: cli.command,
+            summary: SummaryArgs::default(),
+        });
+    }
+
+    if second.is_none() {
+        return TodayCli::try_parse_from(args).map(|cli| ParsedCli {
+            command: None,
             summary: cli.summary,
         });
     }
 
-    if second.is_none() || second.is_some_and(|arg| arg.starts_with('-')) {
-        return TodayCli::try_parse_from(args).map(|cli| ParsedCli {
+    if only_option_args {
+        return Ok(ParsedCli {
             command: None,
-            summary: cli.summary,
+            summary: SummaryArgs::default(),
         });
     }
 
@@ -230,7 +244,12 @@ fn parse_interactive_selection(selection: &str) -> Result<ParsedCli, clap::Error
 
 fn main() {
     let raw_args: Vec<OsString> = std::env::args_os().collect();
-    let is_bare_invocation = raw_args.len() == 1;
+    let is_bare_invocation = raw_args.len() == 1
+        || raw_args.iter().skip(1).all(|arg| {
+            arg.to_str().is_some_and(|s| {
+                s.starts_with('-') && !matches!(s, "-h" | "--help" | "-V" | "--version")
+            })
+        });
 
     if is_bare_invocation && std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
         let selected = match interactive::run() {
@@ -497,7 +516,7 @@ fn load_commits_for_window(
 }
 
 fn should_try_ai_summary(summary_args: SummaryArgs) -> bool {
-    !summary_args.raw
+    !summary_args.raw && !summary_args.table
 }
 
 fn compute_cache_key(
@@ -525,6 +544,8 @@ fn output_format(summary_args: SummaryArgs) -> OutputFormat {
         OutputFormat::Markdown
     } else if summary_args.json {
         OutputFormat::Json
+    } else if summary_args.table {
+        OutputFormat::Table
     } else {
         OutputFormat::Terminal
     }
@@ -593,6 +614,15 @@ where
         });
     }
 
+    let format = output_format(summary_args);
+
+    if matches!(format, OutputFormat::Table) {
+        return Ok(RenderedSummary {
+            output: render::render_table(&commits, &window.date_label),
+            warning: None,
+        });
+    }
+
     let mut groups = summary_group::group_commits_by_profile_then_repo(&commits);
     let period = window.ai_period.as_str();
 
@@ -604,7 +634,7 @@ where
             Ok(p) => p,
             Err(error) => {
                 let global_stats = build_global_stats(&commits);
-                let output = match output_format(summary_args) {
+                let output = match format {
                     OutputFormat::Terminal => render::render_terminal_to_string_by_profile(
                         &groups,
                         &window.date_label,
@@ -618,6 +648,7 @@ where
                     OutputFormat::Json => {
                         render::render_json_by_profile(&groups, &window.date_label, &global_stats)
                     }
+                    OutputFormat::Table => unreachable!("table mode returns early"),
                 };
                 return Ok(RenderedSummary {
                     output,
@@ -735,16 +766,24 @@ where
     };
 
     let global_stats = build_global_stats(&commits);
-    let output = match output_format(summary_args) {
-        OutputFormat::Terminal => {
-            render::render_terminal_to_string_by_profile(&groups, &window.date_label, &global_stats)
-        }
-        OutputFormat::Markdown => {
-            render::render_markdown_by_profile(&groups, &window.date_label, &global_stats)
-        }
+    let include_table = !summary_args.raw;
+    let output = match format {
+        OutputFormat::Terminal => render::render_terminal_to_string_by_profile_with_table(
+            &groups,
+            &window.date_label,
+            &global_stats,
+            include_table,
+        ),
+        OutputFormat::Markdown => render::render_markdown_by_profile_with_table(
+            &groups,
+            &window.date_label,
+            &global_stats,
+            include_table,
+        ),
         OutputFormat::Json => {
             render::render_json_by_profile(&groups, &window.date_label, &global_stats)
         }
+        OutputFormat::Table => unreachable!("table mode returns early"),
     };
 
     Ok(RenderedSummary { output, warning })
@@ -850,6 +889,7 @@ fn render_empty_summary(date_label: &str, summary_args: SummaryArgs) -> String {
             None,
             Vec::new(),
         )),
+        OutputFormat::Table => message,
     }
 }
 
@@ -967,6 +1007,7 @@ mod tests {
                 md: false,
                 raw: false,
                 json: true,
+                table: false,
                 no_cache: false,
             },
             window,
@@ -985,11 +1026,77 @@ mod tests {
     }
 
     #[test]
-    fn parses_one_summary_output_flag_for_today_and_subcommands() {
-        let today = parse_cli(["diddo", "--md"]).unwrap();
-        let explicit_today = parse_cli(["diddo", "today", "--raw"]).unwrap();
+    fn bare_top_level_table_flag_is_treated_as_interactive_invocation() {
+        let cli = parse_cli(["diddo", "--table"]).unwrap();
+
+        assert_eq!(
+            cli,
+            ParsedCli {
+                command: None,
+                summary: SummaryArgs::default(),
+            }
+        );
+    }
+
+    #[test]
+    fn bare_top_level_json_flag_is_treated_as_interactive_invocation() {
+        let cli = parse_cli(["diddo", "--json"]).unwrap();
+
+        assert_eq!(
+            cli,
+            ParsedCli {
+                command: None,
+                summary: SummaryArgs::default(),
+            }
+        );
+    }
+
+    #[test]
+    fn bare_top_level_md_flag_is_treated_as_interactive_invocation() {
+        let cli = parse_cli(["diddo", "--md"]).unwrap();
+
+        assert_eq!(
+            cli,
+            ParsedCli {
+                command: None,
+                summary: SummaryArgs::default(),
+            }
+        );
+    }
+
+    #[test]
+    fn bare_top_level_raw_flag_is_treated_as_interactive_invocation() {
+        let cli = parse_cli(["diddo", "--raw"]).unwrap();
+
+        assert_eq!(
+            cli,
+            ParsedCli {
+                command: None,
+                summary: SummaryArgs::default(),
+            }
+        );
+    }
+
+    #[test]
+    fn bare_top_level_no_cache_flag_is_treated_as_interactive_invocation() {
+        let cli = parse_cli(["diddo", "--no-cache"]).unwrap();
+
+        assert_eq!(
+            cli,
+            ParsedCli {
+                command: None,
+                summary: SummaryArgs::default(),
+            }
+        );
+    }
+
+    #[test]
+    fn parses_subcommand_output_flags_without_changing_behavior() {
+        let today = parse_cli(["diddo", "today", "--table"]).unwrap();
         let yesterday = parse_cli(["diddo", "yesterday", "--json"]).unwrap();
         let week = parse_cli(["diddo", "week", "--raw"]).unwrap();
+        let standup = parse_cli(["diddo", "standup", "--md"]).unwrap();
+        let today_no_cache = parse_cli(["diddo", "today", "--no-cache"]).unwrap();
         let month = parse_cli(["diddo", "month", "--md"]).unwrap();
         let range = parse_cli([
             "diddo",
@@ -1003,23 +1110,12 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            today,
-            ParsedCli {
-                command: None,
-                summary: SummaryArgs {
-                    md: true,
-                    raw: false,
-                    json: false,
-                    no_cache: false,
-                },
-            }
-        );
-        assert_eq!(
-            explicit_today.command,
+            today.command,
             Some(Commands::Today(super::SummaryArgs {
                 md: false,
-                raw: true,
+                raw: false,
                 json: false,
+                table: true,
                 no_cache: false,
             }))
         );
@@ -1029,6 +1125,7 @@ mod tests {
                 md: false,
                 raw: false,
                 json: true,
+                table: false,
                 no_cache: false,
             }))
         );
@@ -1038,7 +1135,28 @@ mod tests {
                 md: false,
                 raw: true,
                 json: false,
+                table: false,
                 no_cache: false,
+            }))
+        );
+        assert_eq!(
+            standup.command,
+            Some(Commands::Standup(super::SummaryArgs {
+                md: true,
+                raw: false,
+                json: false,
+                table: false,
+                no_cache: false,
+            }))
+        );
+        assert_eq!(
+            today_no_cache.command,
+            Some(Commands::Today(super::SummaryArgs {
+                md: false,
+                raw: false,
+                json: false,
+                table: false,
+                no_cache: true,
             }))
         );
         assert_eq!(
@@ -1047,6 +1165,7 @@ mod tests {
                 md: true,
                 raw: false,
                 json: false,
+                table: false,
                 no_cache: false,
             }))
         );
@@ -1059,6 +1178,7 @@ mod tests {
                     md: false,
                     raw: true,
                     json: false,
+                    table: false,
                     no_cache: false,
                 },
             }))
@@ -1094,7 +1214,14 @@ mod tests {
 
     #[test]
     fn rejects_conflicting_summary_output_flags() {
-        let error = parse_cli(["diddo", "--md", "--json"]).unwrap_err();
+        let error = parse_cli(["diddo", "today", "--md", "--json"]).unwrap_err();
+
+        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn rejects_table_with_other_summary_output_flags() {
+        let error = parse_cli(["diddo", "today", "--table", "--json"]).unwrap_err();
 
         assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
     }
@@ -1223,6 +1350,7 @@ mod tests {
                     md: true,
                     raw: false,
                     json: false,
+                    table: false,
                     no_cache: false,
                 }
             ))
@@ -1332,20 +1460,32 @@ mod tests {
             md: true,
             raw: false,
             json: false,
+            table: false,
             no_cache: false,
         }));
         assert!(should_try_ai_summary(SummaryArgs {
             md: false,
             raw: false,
             json: true,
+            table: false,
             no_cache: false,
         }));
         assert!(!should_try_ai_summary(SummaryArgs {
             md: false,
             raw: true,
             json: false,
+            table: false,
             no_cache: false,
         }));
+    }
+
+    #[test]
+    fn table_output_skips_ai_summary() {
+        let (_, summary_args) =
+            summary_request_from_cli(parse_cli(["diddo", "today", "--table"]).unwrap()).unwrap();
+
+        assert!(!should_try_ai_summary(summary_args));
+        assert_eq!(format!("{:?}", output_format(summary_args)), "Table");
     }
 
     #[test]
@@ -1360,6 +1500,7 @@ mod tests {
                 md: false,
                 raw: false,
                 json: true,
+                table: false,
                 no_cache: false,
             }),
             |_config| Ok(Box::new(SuccessProvider("JSON summary".to_string()))),
@@ -1425,6 +1566,7 @@ mod tests {
                 md: true,
                 raw: false,
                 json: false,
+                table: false,
                 no_cache: false,
             }),
             OutputFormat::Markdown
@@ -1434,6 +1576,7 @@ mod tests {
                 md: false,
                 raw: false,
                 json: true,
+                table: false,
                 no_cache: false,
             }),
             OutputFormat::Json
@@ -1479,6 +1622,7 @@ mod tests {
                 md: true,
                 raw: false,
                 json: false,
+                table: false,
                 no_cache: false,
             },
         );
@@ -1488,8 +1632,15 @@ mod tests {
                 md: false,
                 raw: false,
                 json: true,
+                table: false,
                 no_cache: false,
             },
+        );
+        let table = render_empty_summary(
+            "2026-03-10 (today)",
+            summary_request_from_cli(parse_cli(["diddo", "today", "--table"]).unwrap())
+                .unwrap()
+                .1,
         );
 
         assert_eq!(terminal, "No commits recorded for 2026-03-10 (today).");
@@ -1506,6 +1657,7 @@ mod tests {
             markdown,
             "# 2026-03-10 (today)\n\nNo commits recorded for 2026-03-10 (today).\n"
         );
+        assert_eq!(table, "No commits recorded for 2026-03-10 (today).");
         assert!(json.contains("\"date_label\": \"2026-03-10 (today)\""));
         assert!(json.contains("\"projects\": []"));
         assert!(json.contains("\"total_commits\": 0"));
@@ -1535,6 +1687,7 @@ mod tests {
                 md: false,
                 raw: false,
                 json: false,
+                table: false,
                 no_cache: false,
             },
             window,
@@ -1567,6 +1720,7 @@ mod tests {
                 md: false,
                 raw: false,
                 json: true,
+                table: false,
                 no_cache: false,
             },
             window,
@@ -1733,6 +1887,7 @@ mod tests {
                 md: false,
                 raw: false,
                 json: false,
+                table: false,
                 no_cache: false,
             },
             window,
@@ -1810,6 +1965,7 @@ mod tests {
                 md: true,
                 raw: false,
                 json: false,
+                table: false,
                 no_cache: false,
             }))
         );
@@ -1910,6 +2066,7 @@ mod tests {
                 md: false,
                 raw: true,
                 json: false,
+                table: false,
                 no_cache: false,
             },
             window,
@@ -1939,6 +2096,7 @@ mod tests {
                 md: false,
                 raw: false,
                 json: true,
+                table: false,
                 no_cache: false,
             },
             window,
@@ -1953,6 +2111,180 @@ mod tests {
                 .output
                 .contains("\"date_label\": \"last 24 hours (standup)\"")
         );
+    }
+
+    #[test]
+    fn table_output_renders_repo_totals_without_ai() {
+        let commits = vec![
+            sample_commit("abc1", "repo-a", "/tmp/repo-a", 9, 15),
+            sample_commit("def2", "repo-a", "/tmp/repo-a", 10, 30),
+            sample_commit("ghi3", "repo-b", "/tmp/repo-b", 11, 0),
+        ];
+        let window = resolve_summary_window(
+            SummarySelection::Today,
+            NaiveDate::from_ymd_opt(2026, 3, 10).unwrap(),
+        )
+        .unwrap();
+        let (_, summary_args) =
+            summary_request_from_cli(parse_cli(["diddo", "today", "--table"]).unwrap()).unwrap();
+        let database = crate::db::Database::open_in_memory().unwrap();
+        let rendered = render_summary_output(
+            &database,
+            summary_args,
+            window,
+            commits,
+            || Ok(AppConfig::default()),
+            |_| Err(crate::ai::AiError::new("should not be called")),
+        )
+        .unwrap();
+
+        assert!(rendered.output.contains("2026-03-10 (today)"));
+        assert!(rendered.output.contains("repo-a"));
+        assert!(rendered.output.contains("repo-b"));
+        assert!(rendered.output.contains("Total"));
+        assert!(rendered.output.contains("100.0%"));
+        assert_eq!(rendered.warning, None);
+    }
+
+    #[test]
+    fn default_terminal_output_appends_repo_table_after_ai_summary() {
+        let commits = vec![
+            sample_commit("abc1", "repo-a", "/tmp/repo-a", 9, 15),
+            sample_commit("def2", "repo-a", "/tmp/repo-a", 10, 30),
+            sample_commit("ghi3", "repo-b", "/tmp/repo-b", 11, 0),
+        ];
+        let window = resolve_summary_window(
+            SummarySelection::Today,
+            NaiveDate::from_ymd_opt(2026, 3, 10).unwrap(),
+        )
+        .unwrap();
+        let database = crate::db::Database::open_in_memory().unwrap();
+        let rendered = render_summary_output(
+            &database,
+            SummaryArgs::default(),
+            window,
+            commits,
+            || Ok(AppConfig::default()),
+            |_| Ok(Box::new(SuccessProvider("AI summary text.".to_string()))),
+        )
+        .unwrap();
+
+        let ai_pos = rendered.output.find("AI summary text.").unwrap();
+        let first_commit_pos = rendered.output.find("First commit:").unwrap();
+        let table_pos = rendered.output.find("repository").unwrap();
+        assert!(
+            ai_pos < first_commit_pos,
+            "AI summary should appear before first/last commit"
+        );
+        assert!(
+            first_commit_pos < table_pos,
+            "first/last commit should appear before table"
+        );
+        assert!(rendered.output.contains("Total"));
+        assert!(rendered.output.contains("100.0%"));
+    }
+
+    #[test]
+    fn markdown_output_appends_repo_table_by_default() {
+        let commits = vec![
+            sample_commit("abc1", "repo-a", "/tmp/repo-a", 9, 15),
+            sample_commit("def2", "repo-b", "/tmp/repo-b", 10, 30),
+        ];
+        let window = resolve_summary_window(
+            SummarySelection::Today,
+            NaiveDate::from_ymd_opt(2026, 3, 10).unwrap(),
+        )
+        .unwrap();
+        let database = crate::db::Database::open_in_memory().unwrap();
+        let rendered = render_summary_output(
+            &database,
+            SummaryArgs {
+                md: true,
+                raw: false,
+                json: false,
+                table: false,
+                no_cache: false,
+            },
+            window,
+            commits,
+            || Ok(AppConfig::default()),
+            |_| Ok(Box::new(SuccessProvider("MD summary.".to_string()))),
+        )
+        .unwrap();
+
+        assert!(rendered.output.contains("| repository |"));
+        assert!(rendered.output.contains("| **Total** |"));
+        let summary_pos = rendered.output.find("MD summary.").unwrap();
+        let table_pos = rendered.output.find("| repository |").unwrap();
+        assert!(summary_pos < table_pos);
+    }
+
+    #[test]
+    fn raw_output_does_not_append_repo_table() {
+        let commits = vec![
+            sample_commit("abc1", "repo-a", "/tmp/repo-a", 9, 15),
+            sample_commit("def2", "repo-b", "/tmp/repo-b", 10, 30),
+        ];
+        let window = resolve_summary_window(
+            SummarySelection::Today,
+            NaiveDate::from_ymd_opt(2026, 3, 10).unwrap(),
+        )
+        .unwrap();
+        let database = crate::db::Database::open_in_memory().unwrap();
+        let rendered = render_summary_output(
+            &database,
+            SummaryArgs {
+                md: false,
+                raw: true,
+                json: false,
+                table: false,
+                no_cache: false,
+            },
+            window,
+            commits,
+            || Ok(AppConfig::default()),
+            |_| Err(crate::ai::AiError::new("should not be called")),
+        )
+        .unwrap();
+
+        assert!(rendered.output.contains("repo-a"));
+        assert!(!rendered.output.contains("repository"));
+        assert!(!rendered.output.contains("percentage"));
+        assert!(!rendered.output.contains("| repository |"));
+    }
+
+    #[test]
+    fn json_output_remains_unchanged_without_table_section() {
+        let commits = vec![
+            sample_commit("abc1", "repo-a", "/tmp/repo-a", 9, 15),
+            sample_commit("def2", "repo-b", "/tmp/repo-b", 10, 30),
+        ];
+        let window = resolve_summary_window(
+            SummarySelection::Today,
+            NaiveDate::from_ymd_opt(2026, 3, 10).unwrap(),
+        )
+        .unwrap();
+        let database = crate::db::Database::open_in_memory().unwrap();
+        let rendered = render_summary_output(
+            &database,
+            SummaryArgs {
+                md: false,
+                raw: false,
+                json: true,
+                table: false,
+                no_cache: false,
+            },
+            window,
+            commits,
+            || Ok(AppConfig::default()),
+            |_| Ok(Box::new(SuccessProvider("JSON summary.".to_string()))),
+        )
+        .unwrap();
+
+        assert!(rendered.output.contains("\"date_label\""));
+        assert!(!rendered.output.contains("repository"));
+        assert!(!rendered.output.contains("percentage"));
+        assert!(!rendered.output.contains("| repository |"));
     }
 
     #[test]

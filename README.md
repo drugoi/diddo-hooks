@@ -118,13 +118,12 @@ Hooks dir: C:\Users\you\AppData\Roaming\diddo\hooks
 
 ## Usage
 
-Run `diddo` with no arguments in a terminal to launch **interactive mode** — an arrow-key menu of all available commands.
+Run `diddo` in a terminal to launch **interactive mode** — an arrow-key menu of all available commands. Any `--` flags without a subcommand (e.g. `diddo --table`, `diddo --md`) also launch interactive mode; the flags are ignored.
 Interactive mode includes direct shortcuts for `month` and a `range` form that collects `from` and optional `to` dates in either `YYYY-MM-DD` or `DD.MM.YYYY` before launching the command.
 
 Show summaries:
 
 ```bash
-diddo
 diddo today
 diddo yesterday
 diddo week
@@ -135,38 +134,64 @@ diddo range --from 2026-03-01 --to 2026-03-11
 diddo standup
 ```
 
-Output modes:
+Output modes (require a subcommand):
 
 ```bash
-diddo --md
-diddo --json
-diddo --raw
-diddo --no-cache
-
 diddo today --md
+diddo today --table
 diddo yesterday --json
 diddo week --raw
 diddo month --md
 diddo range --from 2026-03-01 --json
 diddo range --from 2026-03-01 --to 2026-03-11 --raw
 diddo today --no-cache
+diddo yesterday --json
+diddo yesterday --table
+diddo week --raw
+diddo week --table
 ```
 
-- **`--md`** — Output summary as markdown.
+Output flags must be used with a subcommand (`today`, `yesterday`, `week`, `standup`):
+
+- **`--md`** — Output summary as markdown. Includes the repository activity table.
 - **`--json`** — Output summary as JSON.
-- **`--raw`** — Skip AI and show grouped raw commit data.
+- **`--raw`** — Skip AI and show grouped raw commit data only (no activity table).
+- **`--table`** — Skip AI and show only the per-repository activity table.
 - **`--no-cache`** — Skip the AI summary cache and force a fresh summary.
+
+Default terminal and markdown summaries include a repository activity table after the AI summary (or raw fallback). The table shows per-repository commit counts and percentages for the selected period:
+
+```text
+repository   commits  percentage
+-----------  -------  ----------
+diddo              5       62.5%
+api-service        3       37.5%
+-----------  -------  ----------
+Total              8      100.0%
+```
+
+Use `--table` with a subcommand to skip AI and show only the table:
+
+```bash
+diddo today --table
+diddo week --table
+```
 
 Current CLI behavior:
 
+- `diddo` without a subcommand launches interactive mode in a terminal; any `--` flags are ignored
+- `diddo today`, `diddo yesterday`, `diddo week`, `diddo standup` run the corresponding summary directly
 - `diddo standup` shows commits from the last 24 hours (`[now - 24h, now]`), useful when your daily meeting is in the afternoon
 - `diddo` and `diddo today` are equivalent
 - `diddo month` shows the current calendar month from day 1 through today
 - `diddo range --from YYYY-MM-DD|DD.MM.YYYY [--to YYYY-MM-DD|DD.MM.YYYY]` shows an inclusive custom date range
 - `diddo range --from ...` defaults `--to` to today's local date
 - `range` accepts both `YYYY-MM-DD` and `DD.MM.YYYY` on input, and normalizes output labels back to `YYYY-MM-DD`
-- `--md`, `--json`, and `--raw` are summary-only flags
-- `--raw` skips AI and shows grouped commit data
+- Output flags (`--md`, `--json`, `--raw`, `--table`, `--no-cache`) only take effect with a subcommand
+- `--table` is mutually exclusive with `--md`, `--json`, and `--raw`
+- `--raw` skips AI and shows grouped commit data without the activity table
+- `--table` skips AI and shows only the repository activity table
+- Default terminal and `--md` summaries include the repository activity table after the AI summary (or raw fallback)
 - `--md` and `--json` still try AI first unless you also use `--raw`
 - If no commits are recorded for the selected period, `diddo` prints an empty-period message instead of failing
 

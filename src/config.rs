@@ -26,17 +26,20 @@ pub struct AiCliConfig {
 
 impl AppConfig {
     pub fn load(path: &Path) -> io::Result<Self> {
-        if !path.exists() {
-            return Ok(Self::default());
-        }
+        let mut config = if path.exists() {
+            let contents = fs::read_to_string(path)?;
+            toml::from_str::<Self>(&contents).map_err(|error| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("failed to parse config file {}: {error}", path.display()),
+                )
+            })?
+        } else {
+            Self::default()
+        };
 
-        let contents = fs::read_to_string(path)?;
-        toml::from_str::<Self>(&contents).map_err(|error| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("failed to parse config file {}: {error}", path.display()),
-            )
-        })
+        config.ai.apply_environment_defaults();
+        Ok(config)
     }
 }
 
@@ -60,14 +63,25 @@ impl AiConfig {
     }
 
     pub fn resolved_api_key(&self) -> Option<String> {
-        if let Some(api_key) = normalize_value(self.api_key.as_deref()) {
-            return Some(api_key);
+        normalize_value(self.api_key.as_deref())
+    }
+
+    pub fn apply_environment_defaults(&mut self) {
+        if self.normalized_provider().is_none()
+            && let Some(inferred) = infer_provider_from_environment()
+        {
+            self.provider = Some(inferred);
         }
 
-        match self.resolved_provider().as_deref() {
-            Some("openai") => read_env("DIDDO_OPENAI_KEY"),
-            Some("anthropic") => read_env("DIDDO_ANTHROPIC_KEY"),
-            _ => None,
+        if normalize_value(self.api_key.as_deref()).is_none() {
+            let env_key = match self.normalized_provider().as_deref() {
+                Some("openai") => read_env("DIDDO_OPENAI_KEY"),
+                Some("anthropic") => read_env("DIDDO_ANTHROPIC_KEY"),
+                _ => None,
+            };
+            if let Some(key) = env_key {
+                self.api_key = Some(key);
+            }
         }
     }
 
@@ -127,6 +141,15 @@ mod tests {
 
     #[test]
     fn returns_default_config_when_file_does_not_exist() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        unsafe {
+            std::env::remove_var("DIDDO_OPENAI_KEY");
+            std::env::remove_var("DIDDO_ANTHROPIC_KEY");
+        }
+
         let temp = temp_dir("missing-config");
         let missing = temp.join("config.toml");
 
@@ -245,7 +268,7 @@ api_key = "file-key"
 
         let config = AppConfig::load(&missing).unwrap();
 
-        assert_eq!(config.ai.provider, None);
+        assert_eq!(config.ai.provider.as_deref(), Some("openai"));
         assert_eq!(config.ai.resolved_provider().as_deref(), Some("openai"));
         assert_eq!(
             config.ai.resolved_api_key().as_deref(),
@@ -285,7 +308,7 @@ prefer = "api"
 
         let config = AppConfig::load(&config_path).unwrap();
 
-        assert_eq!(config.ai.provider, None);
+        assert_eq!(config.ai.provider.as_deref(), Some("anthropic"));
         assert_eq!(config.ai.model.as_deref(), Some("claude-sonnet-4-6"));
         assert_eq!(config.ai.resolved_provider().as_deref(), Some("anthropic"));
         assert_eq!(

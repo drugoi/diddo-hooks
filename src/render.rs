@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 use std::cmp::Reverse;
+use std::collections::BTreeMap;
 use std::io::{self, Write};
 
 use crate::db::Commit;
@@ -51,14 +52,15 @@ pub fn render_markdown(data: &SummaryData) -> String {
     }
 
     output.push_str(&format!(
-        "\n---\n{} commits across {} projects | First: {} | Last: {} | Most active: {} ({})\n",
-        data.total_commits,
-        data.project_count,
-        data.first_commit_time,
-        data.last_commit_time,
-        data.most_active_project,
-        data.most_active_count
+        "\nFirst: {} | Last: {}\n",
+        data.first_commit_time, data.last_commit_time,
     ));
+
+    if !data.commits.is_empty() {
+        output.push('\n');
+        output.push_str(&render_markdown_table(&data.commits));
+        output.push('\n');
+    }
 
     output
 }
@@ -100,8 +102,23 @@ pub fn render_terminal_to_string_by_profile(
     date_label: &str,
     global_stats: &GlobalStats,
 ) -> String {
+    render_terminal_to_string_by_profile_with_table(sections, date_label, global_stats, true)
+}
+
+pub fn render_terminal_to_string_by_profile_with_table(
+    sections: &[ProfileGroup],
+    date_label: &str,
+    global_stats: &GlobalStats,
+    include_table: bool,
+) -> String {
     let mut output = Vec::new();
-    let _ = write_terminal_by_profile(&mut output, sections, date_label, global_stats);
+    let _ = write_terminal_by_profile(
+        &mut output,
+        sections,
+        date_label,
+        global_stats,
+        include_table,
+    );
     String::from_utf8(output).unwrap_or_default()
 }
 
@@ -110,6 +127,15 @@ pub fn render_markdown_by_profile(
     sections: &[ProfileGroup],
     date_label: &str,
     global_stats: &GlobalStats,
+) -> String {
+    render_markdown_by_profile_with_table(sections, date_label, global_stats, true)
+}
+
+pub fn render_markdown_by_profile_with_table(
+    sections: &[ProfileGroup],
+    date_label: &str,
+    global_stats: &GlobalStats,
+    include_table: bool,
 ) -> String {
     let mut output = format!("# {}\n\n", date_label);
 
@@ -124,14 +150,25 @@ pub fn render_markdown_by_profile(
         output.push_str("\n\n");
     }
 
-    output.push_str(&format!(
-        "---\n{} commits | First: {} | Last: {} | Most active: {} ({})\n",
-        global_stats.total_commits,
-        global_stats.first_commit_time,
-        global_stats.last_commit_time,
-        global_stats.most_active_project,
-        global_stats.most_active_count
-    ));
+    if include_table {
+        output.push_str(&format!(
+            "First: {} | Last: {}\n\n",
+            global_stats.first_commit_time, global_stats.last_commit_time,
+        ));
+        let all_commits = flatten_profile_commits(sections);
+        if !all_commits.is_empty() {
+            output.push_str(&render_markdown_table(&all_commits));
+        }
+    } else {
+        output.push_str(&format!(
+            "---\n{} commits | First: {} | Last: {} | Most active: {} ({})\n",
+            global_stats.total_commits,
+            global_stats.first_commit_time,
+            global_stats.last_commit_time,
+            global_stats.most_active_project,
+            global_stats.most_active_count
+        ));
+    }
 
     output
 }
@@ -177,11 +214,99 @@ pub fn render_json_by_profile(
     .unwrap_or_else(|_| "{}".to_string())
 }
 
+/// Renders the table body (header, rows, total) as an ASCII table for terminal embedding.
+pub(crate) fn render_terminal_table_body(commits: &[Commit]) -> String {
+    let rows = repo_table_rows(commits);
+    let total_commits = commits.len();
+    let total_percentage = "100.0%";
+    let repository_width = rows
+        .iter()
+        .map(|row| row.repository.len())
+        .max()
+        .unwrap_or(0)
+        .max("repository".len())
+        .max("Total".len());
+    let commits_width = rows
+        .iter()
+        .map(|row| row.commit_count.to_string().len())
+        .max()
+        .unwrap_or(0)
+        .max("commits".len())
+        .max(total_commits.to_string().len());
+    let percentage_width = rows
+        .iter()
+        .map(|row| row.percentage.len())
+        .max()
+        .unwrap_or(0)
+        .max("percentage".len())
+        .max(total_percentage.len());
+    let separator = format!(
+        "{:-<repository_width$}  {:-<commits_width$}  {:-<percentage_width$}",
+        "", "", ""
+    );
+
+    let mut output = String::new();
+    output.push_str(&format!(
+        "{:<repository_width$}  {:>commits_width$}  {:>percentage_width$}\n",
+        "repository", "commits", "percentage"
+    ));
+    output.push_str(&separator);
+    output.push('\n');
+
+    for row in rows {
+        output.push_str(&format!(
+            "{:<repository_width$}  {:>commits_width$}  {:>percentage_width$}\n",
+            row.repository, row.commit_count, row.percentage
+        ));
+    }
+
+    output.push_str(&separator);
+    output.push('\n');
+    output.push_str(&format!(
+        "{:<repository_width$}  {:>commits_width$}  {:>percentage_width$}\n",
+        "Total", total_commits, total_percentage
+    ));
+    output
+}
+
+/// Renders repository activity as a markdown table.
+pub(crate) fn render_markdown_table(commits: &[Commit]) -> String {
+    let rows = repo_table_rows(commits);
+    let total_commits = commits.len();
+
+    let mut output = String::new();
+    output.push_str("| repository | commits | percentage |\n");
+    output.push_str("| --- | ---: | ---: |\n");
+
+    for row in rows {
+        output.push_str(&format!(
+            "| {} | {} | {} |\n",
+            row.repository, row.commit_count, row.percentage
+        ));
+    }
+
+    output.push_str(&format!(
+        "| **Total** | **{}** | **100.0%** |\n",
+        total_commits
+    ));
+    output
+}
+
+pub fn render_table(commits: &[Commit], date_label: &str) -> String {
+    let mut output = String::new();
+    output.push('\n');
+    output.push_str(date_label);
+    output.push_str("\n\n");
+    output.push_str(&render_terminal_table_body(commits));
+    output
+}
+
 fn write_terminal_by_profile<W: Write>(
     writer: &mut W,
     sections: &[ProfileGroup],
     date_label: &str,
     global_stats: &GlobalStats,
+    include_table: bool,
 ) -> io::Result<()> {
     writeln!(writer)?;
     writeln!(writer, "{}", date_label)?;
@@ -199,18 +324,35 @@ fn write_terminal_by_profile<W: Write>(
         writeln!(writer)?;
     }
 
-    writeln!(writer, "-----------------------")?;
-    writeln!(writer, "{} commits", global_stats.total_commits)?;
-    writeln!(writer, "First commit: {}", global_stats.first_commit_time)?;
-    writeln!(writer, "Last commit: {}", global_stats.last_commit_time)?;
-    writeln!(
-        writer,
-        "Most active: {} ({} {})",
-        global_stats.most_active_project,
-        global_stats.most_active_count,
-        pluralize("commit", global_stats.most_active_count)
-    )?;
+    if include_table {
+        writeln!(writer, "First commit: {}", global_stats.first_commit_time)?;
+        writeln!(writer, "Last commit: {}", global_stats.last_commit_time)?;
+        writeln!(writer)?;
+        let all_commits = flatten_profile_commits(sections);
+        if !all_commits.is_empty() {
+            write!(writer, "{}", render_terminal_table_body(&all_commits))?;
+        }
+    } else {
+        writeln!(writer, "-----------------------")?;
+        writeln!(writer, "{} commits", global_stats.total_commits)?;
+        writeln!(writer, "First commit: {}", global_stats.first_commit_time)?;
+        writeln!(writer, "Last commit: {}", global_stats.last_commit_time)?;
+        writeln!(
+            writer,
+            "Most active: {} ({} {})",
+            global_stats.most_active_project,
+            global_stats.most_active_count,
+            pluralize("commit", global_stats.most_active_count)
+        )?;
+    }
     writeln!(writer)
+}
+
+fn flatten_profile_commits(sections: &[ProfileGroup]) -> Vec<Commit> {
+    sections
+        .iter()
+        .flat_map(|s| s.repos.iter().flat_map(|r| r.commits.iter().cloned()))
+        .collect()
 }
 
 fn write_repos_terminal<W: Write>(writer: &mut W, repos: &[RepoGroup]) -> io::Result<()> {
@@ -261,21 +403,14 @@ fn write_terminal<W: Write>(writer: &mut W, data: &SummaryData) -> io::Result<()
     }
 
     writeln!(writer)?;
-    writeln!(writer, "-----------------------")?;
-    writeln!(
-        writer,
-        "{} commits across {} projects",
-        data.total_commits, data.project_count
-    )?;
     writeln!(writer, "First commit: {}", data.first_commit_time)?;
     writeln!(writer, "Last commit: {}", data.last_commit_time)?;
-    writeln!(
-        writer,
-        "Most active: {} ({} {})",
-        data.most_active_project,
-        data.most_active_count,
-        pluralize("commit", data.most_active_count)
-    )?;
+
+    if !data.commits.is_empty() {
+        writeln!(writer)?;
+        write!(writer, "{}", render_terminal_table_body(&data.commits))?;
+    }
+
     writeln!(writer)
 }
 
@@ -325,6 +460,46 @@ struct ProjectGroup<'a> {
     repo_name: &'a str,
     repo_path: &'a str,
     commits: Vec<&'a Commit>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RepoTableRow {
+    repository: String,
+    commit_count: usize,
+    percentage: String,
+}
+
+fn repo_table_rows(commits: &[Commit]) -> Vec<RepoTableRow> {
+    let project_groups = grouped_commits(commits);
+    let total_commits = commits.len();
+    let mut repo_name_counts = BTreeMap::new();
+
+    for project in &project_groups {
+        *repo_name_counts.entry(project.repo_name).or_insert(0usize) += 1;
+    }
+
+    project_groups
+        .into_iter()
+        .map(|project| {
+            let repository = if repo_name_counts
+                .get(project.repo_name)
+                .copied()
+                .unwrap_or(0)
+                > 1
+            {
+                format!("{} ({})", project.repo_name, project.repo_path)
+            } else {
+                project.repo_name.to_string()
+            };
+            let commit_count = project.commits.len();
+
+            RepoTableRow {
+                repository,
+                commit_count,
+                percentage: format!("{:.1}%", commit_count as f64 * 100.0 / total_commits as f64),
+            }
+        })
+        .collect()
 }
 
 fn grouped_commits(commits: &[Commit]) -> Vec<ProjectGroup<'_>> {
@@ -424,7 +599,7 @@ mod tests {
 
     use super::{
         GlobalStats, SummaryData, render_json, render_markdown, render_markdown_by_profile,
-        render_terminal_to_string_by_profile, write_terminal,
+        render_terminal_to_string, render_terminal_to_string_by_profile, write_terminal,
     };
     use crate::db::Commit;
     use crate::summary_group::{ProfileGroup, RepoGroup};
@@ -440,10 +615,10 @@ mod tests {
         assert!(rendered.contains("\n2026-03-10 (today)\n"));
         assert!(rendered.contains("Wrapped up hook integration."));
         assert!(rendered.contains("Kept config stable."));
-        assert!(rendered.contains("3 commits across 2 projects"));
+        assert!(!rendered.contains("3 commits across 2 projects"));
         assert!(rendered.contains("First commit: 09:15"));
         assert!(rendered.contains("Last commit: 15:20"));
-        assert!(rendered.contains("Most active: diddo (2 commits)"));
+        assert!(!rendered.contains("Most active: diddo (2 commits)"));
     }
 
     #[test]
@@ -489,9 +664,8 @@ mod tests {
 
         assert!(diddo_index < api_service_index);
         assert!(rendered.contains("- `abc1234` feat: add renderers"));
-        assert!(rendered.contains(
-            "3 commits across 2 projects | First: 09:15 | Last: 15:20 | Most active: diddo (2)"
-        ));
+        assert!(rendered.contains("First: 09:15 | Last: 15:20"));
+        assert!(!rendered.contains("3 commits across 2 projects"));
     }
 
     #[test]
@@ -634,6 +808,150 @@ mod tests {
         assert!(md.contains("### proj (2 commits)"));
         assert!(md.contains("- `h1` first commit"));
         assert!(md.contains("- `h2` second commit"));
+    }
+
+    #[test]
+    fn markdown_table_renders_repo_counts_percentages_and_total() {
+        let commits = sample_summary(None).commits;
+        let rendered = super::render_markdown_table(&commits);
+
+        assert!(rendered.contains("| repository | commits | percentage |"));
+        assert!(rendered.contains("| --- | ---: | ---: |"));
+        assert!(rendered.contains("| diddo | 2 | 66.7% |"));
+        assert!(rendered.contains("| api-service | 1 | 33.3% |"));
+        assert!(rendered.contains("| **Total** | **3** | **100.0%** |"));
+    }
+
+    #[test]
+    fn terminal_table_body_can_be_embedded_after_summary_text() {
+        let commits = sample_summary(None).commits;
+        let rendered = super::render_terminal_table_body(&commits);
+
+        let embedded = format!("AI summary here.\n\n{rendered}");
+
+        assert!(embedded.starts_with("AI summary here.\n\nrepository"));
+        assert!(rendered.contains("repository"));
+        assert!(rendered.contains("commits"));
+        assert!(rendered.contains("percentage"));
+        assert!(rendered.contains("diddo"));
+        assert!(rendered.contains("api-service"));
+        assert!(rendered.contains("Total"));
+        assert!(rendered.contains("100.0%"));
+        assert!(!rendered.contains("2026"));
+        assert!(!rendered.contains("AI summary here."));
+    }
+
+    #[test]
+    fn terminal_summary_with_ai_appends_table_before_footer() {
+        let data = sample_summary(Some("AI summary here."));
+        let rendered = render_terminal_to_string(&data);
+
+        let ai_pos = rendered.find("AI summary here.").unwrap();
+        let first_commit_pos = rendered.find("First commit:").unwrap();
+        let table_pos = rendered.find("repository").unwrap();
+        assert!(ai_pos < first_commit_pos);
+        assert!(first_commit_pos < table_pos);
+        assert!(rendered.contains("Total"));
+        assert!(rendered.contains("100.0%"));
+    }
+
+    #[test]
+    fn terminal_summary_without_ai_appends_table_after_first_last() {
+        let data = sample_summary(None);
+        let rendered = render_terminal_to_string(&data);
+
+        let raw_pos = rendered.find("diddo (2 commits)").unwrap();
+        let first_commit_pos = rendered.find("First commit:").unwrap();
+        let table_pos = rendered.find("repository").unwrap();
+        assert!(raw_pos < first_commit_pos);
+        assert!(first_commit_pos < table_pos);
+    }
+
+    #[test]
+    fn markdown_summary_appends_table_after_first_last() {
+        let data = sample_summary(Some("AI markdown summary."));
+        let rendered = render_markdown(&data);
+
+        let ai_pos = rendered.find("AI markdown summary.").unwrap();
+        let stats_pos = rendered.find("First:").unwrap();
+        let table_pos = rendered.find("| repository |").unwrap();
+        assert!(ai_pos < stats_pos);
+        assert!(stats_pos < table_pos);
+        assert!(rendered.contains("| **Total** |"));
+    }
+
+    #[test]
+    fn by_profile_terminal_appends_table_after_first_last() {
+        let commit = sample_commit("abc123", "feat: add x", "my-repo", 9, 15);
+        let groups: Vec<ProfileGroup> = vec![ProfileGroup {
+            profile_label: "dev@example.com".to_string(),
+            repos: vec![RepoGroup {
+                repo_name: "my-repo".to_string(),
+                repo_path: "/path/my-repo".to_string(),
+                commits: vec![commit],
+            }],
+            ai_summary: Some("Shipped the new feature.".to_string()),
+        }];
+        let stats = default_global_stats();
+
+        let out = render_terminal_to_string_by_profile(&groups, "2026-03-10 (today)", &stats);
+        let summary_pos = out.find("Shipped the new feature.").unwrap();
+        let first_commit_pos = out.find("First commit:").unwrap();
+        let table_pos = out.find("repository").unwrap();
+        assert!(summary_pos < first_commit_pos);
+        assert!(first_commit_pos < table_pos);
+        assert!(out.contains("Total"));
+        assert!(out.contains("100.0%"));
+    }
+
+    #[test]
+    fn by_profile_markdown_appends_table_after_first_last() {
+        let commit = sample_commit("abc123", "feat: add x", "my-repo", 9, 15);
+        let groups: Vec<ProfileGroup> = vec![ProfileGroup {
+            profile_label: "dev@example.com".to_string(),
+            repos: vec![RepoGroup {
+                repo_name: "my-repo".to_string(),
+                repo_path: "/path/my-repo".to_string(),
+                commits: vec![commit],
+            }],
+            ai_summary: Some("Shipped the new feature.".to_string()),
+        }];
+        let stats = default_global_stats();
+
+        let md = render_markdown_by_profile(&groups, "2026-03-10 (today)", &stats);
+        let summary_pos = md.find("Shipped the new feature.").unwrap();
+        let first_pos = md.find("First:").unwrap();
+        let table_pos = md.find("| repository |").unwrap();
+        assert!(summary_pos < first_pos);
+        assert!(first_pos < table_pos);
+        assert!(md.contains("| **Total** |"));
+    }
+
+    #[test]
+    fn table_renders_sorted_repo_counts_percentages_and_total_row() {
+        let rendered = super::render_table(&sample_summary(None).commits, "2026-03-10 (today)");
+
+        assert!(rendered.contains("2026-03-10 (today)"));
+        assert!(rendered.contains("repository"));
+        assert!(rendered.contains("commits"));
+        assert!(rendered.contains("percentage"));
+        let diddo_index = rendered.find("diddo").unwrap();
+        let api_service_index = rendered.find("api-service").unwrap();
+        let total_index = rendered.find("Total").unwrap();
+        assert!(diddo_index < api_service_index);
+        assert!(api_service_index < total_index);
+        assert!(rendered.contains("66.7%"));
+        assert!(rendered.contains("33.3%"));
+        assert!(rendered.contains("100.0%"));
+    }
+
+    #[test]
+    fn table_breaks_ties_by_repo_name() {
+        let rendered = super::render_table(&tied_summary(None).commits, "2026-03-10 (today)");
+
+        let alpha_index = rendered.find("alpha-app").unwrap();
+        let zebra_index = rendered.find("zebra-app").unwrap();
+        assert!(alpha_index < zebra_index);
     }
 
     fn sample_summary(ai_summary: Option<&str>) -> SummaryData {
