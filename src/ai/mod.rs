@@ -255,8 +255,29 @@ pub fn build_prompt(
     }
 
     let mut prompt = format!(
-        "You are summarizing git activity for {period}.\n\
-         Write a concise status update with the main themes, notable repos, and momentum.\n\
+        "You are summarizing git activity for {period}.\n\n\
+         Using only the commit data provided, produce a concise repository-based summary of changes.\n\n\
+         Format:\n\n\
+         Repository: <repository_name>\n\
+         1. <short description of change or feature>\n\
+         2. <short description of fix or improvement>\n\n\
+         Repository: <another_repository>\n\
+         1. <short description of change or feature>\n\
+         2. <short description of fix or improvement>\n\n\
+         Examples:\n\n\
+         Repository: diddo\n\
+         1. Added AI-powered daily summaries for recorded commits.\n\
+         2. Improved the global hook installation flow.\n\n\
+         Repository: api-service\n\
+         1. Fixed token refresh handling for expired sessions.\n\
+         2. Refactored request validation for clearer error responses.\n\n\
+         Guidelines:\n\
+         - Group commits by repository.\n\
+         - Convert commit messages into short, clear descriptions of what changed.\n\
+         - Combine similar commits into a single bullet when possible.\n\
+         - Focus on meaningful work (features, fixes, refactors, improvements).\n\
+         - Ignore trivial commits (formatting, typos, merge commits) unless important.\n\
+         - Keep each bullet to one short sentence.\n\n\
          Use only the commit data below.\n\n\
          Period: {period}\n\
          Commit count: {}\n\n\
@@ -283,8 +304,7 @@ pub fn build_prompt(
         }
     }
 
-    prompt
-        .push_str("\nReturn plain text only. Keep it brief and useful, in 2 short paragraphs max.");
+    prompt.push_str("\nReturn plain text only.");
 
     prompt
 }
@@ -480,7 +500,10 @@ mod tests {
         let prompt = build_prompt(&commits, "week", None);
 
         assert!(prompt.contains("You are summarizing git activity for week."));
-        assert!(prompt.contains("Return plain text only. Keep it brief"));
+        assert!(prompt.contains("Repository: <repository_name>"));
+        assert!(prompt.contains("Repository: diddo"));
+        assert!(prompt.contains("Guidelines:"));
+        assert!(prompt.contains("Return plain text only."));
         assert!(prompt.contains("Period: week"));
     }
 

@@ -250,7 +250,37 @@ When `ai.prompt_instructions` is not set (or empty), the CLI uses a built-in pro
 
 ```text
 You are summarizing git activity for {period}.
-Write a concise status update with the main themes, notable repos, and momentum.
+
+Using only the commit data provided, produce a concise repository-based summary of changes.
+
+Format:
+
+Repository: <repository_name>
+1. <short description of change or feature>
+2. <short description of fix or improvement>
+
+Repository: <another_repository>
+1. <short description of change or feature>
+2. <short description of fix or improvement>
+
+Examples:
+
+Repository: diddo
+1. Added AI-powered daily summaries for recorded commits.
+2. Improved the global hook installation flow.
+
+Repository: api-service
+1. Fixed token refresh handling for expired sessions.
+2. Refactored request validation for clearer error responses.
+
+Guidelines:
+- Group commits by repository.
+- Convert commit messages into short, clear descriptions of what changed.
+- Combine similar commits into a single bullet when possible.
+- Focus on meaningful work (features, fixes, refactors, improvements).
+- Ignore trivial commits (formatting, typos, merge commits) unless important.
+- Keep each bullet to one short sentence.
+
 Use only the commit data below.
 
 Period: {period}
@@ -260,7 +290,7 @@ Commits:
 1. [repo_name] message (hash) on branch at 2026-03-10T12:00:00Z; files: 3, +12, -4
 ...
 
-Return plain text only. Keep it brief and useful, in 2 short paragraphs max.
+Return plain text only.
 ```
 
 `{period}` is e.g. today, yesterday, this week, this month, or a concrete date span like `2026-03-01 to 2026-03-11`; `{n}` is the commit count. The list is one line per commit in the format above.
