@@ -11,6 +11,7 @@ pub struct AppPaths {
     pub db_path: PathBuf,
     pub config_path: PathBuf,
     pub hooks_dir: PathBuf,
+    pub update_cache_path: PathBuf,
 }
 
 #[allow(dead_code)]
@@ -30,6 +31,7 @@ impl AppPaths {
 
     fn from_roots(db_root: PathBuf, config_root: PathBuf) -> Self {
         Self {
+            update_cache_path: db_root.join("update_check.json"),
             db_path: db_root.join("commits.db"),
             config_path: config_root.join("config.toml"),
             hooks_dir: config_root.join("hooks"),
@@ -52,6 +54,7 @@ mod tests {
         assert_eq!(paths.db_path, db_root.join("commits.db"));
         assert_eq!(paths.config_path, config_root.join("config.toml"));
         assert_eq!(paths.hooks_dir, config_root.join("hooks"));
+        assert_eq!(paths.update_cache_path, db_root.join("update_check.json"));
     }
 
     #[test]
