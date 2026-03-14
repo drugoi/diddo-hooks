@@ -269,7 +269,32 @@ fn main() {
     run_cli(cli);
 }
 
+fn spawn_update_check(
+    cli: &ParsedCli,
+) -> Option<std::thread::JoinHandle<Option<String>>> {
+    // Skip for Hook and Update commands
+    if matches!(
+        cli.command,
+        Some(Commands::Hook) | Some(Commands::Update(_))
+    ) {
+        return None;
+    }
+
+    let paths = paths::AppPaths::new().ok()?;
+    let app_config = config::AppConfig::load(&paths.config_path).ok()?;
+    if !app_config.update.auto_check {
+        return None;
+    }
+
+    let cache_path = paths.update_cache_path;
+    Some(std::thread::spawn(move || {
+        update::check_for_update(&cache_path)
+    }))
+}
+
 fn run_cli(cli: ParsedCli) {
+    let update_handle = spawn_update_check(&cli);
+
     let result = match cli.command {
         Some(Commands::Init) => run_init_command(),
         Some(Commands::Uninstall) => run_uninstall_command(),
@@ -279,6 +304,15 @@ fn run_cli(cli: ParsedCli) {
         Some(Commands::Update(args)) => run_update_command(args),
         _ => run_summary_command(cli),
     };
+
+    if let Some(handle) = update_handle {
+        if let Ok(Some(latest)) = handle.join() {
+            eprintln!(
+                "Update available: {} \u{2192} {latest}, run `diddo update`",
+                env!("CARGO_PKG_VERSION")
+            );
+        }
+    }
 
     if let Err(error) = result {
         eprintln!("{error}");
@@ -1747,6 +1781,7 @@ mod tests {
             db_path: PathBuf::from("/tmp/diddo/commits.db"),
             config_path: PathBuf::from("/tmp/diddo/config.toml"),
             hooks_dir: PathBuf::from("/tmp/diddo/hooks"),
+            update_cache_path: PathBuf::from("/tmp/diddo/update_check.json"),
         };
 
         assert_eq!(

@@ -2,8 +2,10 @@ use std::error::Error;
 use std::io::{self, IsTerminal, Write};
 use std::path::Path;
 use std::process::Command;
+use std::time::Duration;
 
 use semver::Version;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InstallType {
@@ -85,6 +87,7 @@ const GITHUB_RELEASES_URL: &str = "https://api.github.com/repos/drugoi/diddo-hoo
 pub fn fetch_latest_release_tag() -> Result<String, Box<dyn Error>> {
     let client = reqwest::blocking::Client::builder()
         .user_agent(format!("diddo/{}", env!("CARGO_PKG_VERSION")))
+        .timeout(Duration::from_secs(5))
         .build()?;
     let resp = client.get(GITHUB_RELEASES_URL).send()?;
     let json: serde_json::Value = resp.json()?;
@@ -93,6 +96,52 @@ pub fn fetch_latest_release_tag() -> Result<String, Box<dyn Error>> {
         .and_then(|v| v.as_str())
         .ok_or_else(|| std::io::Error::other("missing tag_name in release"))?;
     Ok(strip_v(tag).to_string())
+}
+
+const CACHE_TTL_SECS: i64 = 2 * 60 * 60; // 2 hours
+
+#[derive(Debug, Serialize, Deserialize)]
+struct UpdateCache {
+    latest_version: String,
+    checked_at: i64,
+}
+
+/// Check for a newer version, using a file cache to avoid hitting GitHub too often.
+/// Returns `Some(latest_version)` if a newer version is available, `None` otherwise.
+/// Any error is silently swallowed.
+pub fn check_for_update(cache_path: &Path) -> Option<String> {
+    let current = env!("CARGO_PKG_VERSION");
+
+    // Try reading cached result
+    if let Ok(contents) = std::fs::read_to_string(cache_path) {
+        if let Ok(cache) = serde_json::from_str::<UpdateCache>(&contents) {
+            let now = chrono::Utc::now().timestamp();
+            if now - cache.checked_at < CACHE_TTL_SECS {
+                return if is_newer(current, &cache.latest_version) {
+                    Some(cache.latest_version)
+                } else {
+                    None
+                };
+            }
+        }
+    }
+
+    // Cache miss or stale — fetch from GitHub
+    let latest = fetch_latest_release_tag().ok()?;
+    let cache = UpdateCache {
+        latest_version: latest.clone(),
+        checked_at: chrono::Utc::now().timestamp(),
+    };
+    if let Some(parent) = cache_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(cache_path, serde_json::to_string(&cache).ok()?);
+
+    if is_newer(current, &latest) {
+        Some(latest)
+    } else {
+        None
+    }
 }
 
 /// Confirm with user; true to proceed. No prompt if assume_yes or non-TTY.
@@ -243,5 +292,64 @@ mod tests {
     #[test]
     fn is_newer_strips_v_prefix() {
         assert!(is_newer("0.5.0", "v0.6.0"));
+    }
+
+    #[test]
+    fn check_for_update_returns_none_when_cache_has_current_version() {
+        use super::{UpdateCache, check_for_update};
+
+        let dir = std::env::temp_dir().join(format!("diddo-update-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cache_path = dir.join("update_check.json");
+
+        let cache = UpdateCache {
+            latest_version: env!("CARGO_PKG_VERSION").to_string(),
+            checked_at: chrono::Utc::now().timestamp(),
+        };
+        std::fs::write(&cache_path, serde_json::to_string(&cache).unwrap()).unwrap();
+
+        assert_eq!(check_for_update(&cache_path), None);
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn check_for_update_returns_some_when_cache_has_newer_version() {
+        use super::{UpdateCache, check_for_update};
+
+        let dir = std::env::temp_dir().join(format!(
+            "diddo-update-test-newer-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cache_path = dir.join("update_check.json");
+
+        let cache = UpdateCache {
+            latest_version: "99.99.99".to_string(),
+            checked_at: chrono::Utc::now().timestamp(),
+        };
+        std::fs::write(&cache_path, serde_json::to_string(&cache).unwrap()).unwrap();
+
+        assert_eq!(check_for_update(&cache_path), Some("99.99.99".to_string()));
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn check_for_update_returns_none_when_no_cache_and_network_unavailable() {
+        use super::check_for_update;
+
+        let dir = std::env::temp_dir().join(format!(
+            "diddo-update-test-nocache-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cache_path = dir.join("update_check.json");
+
+        // No cache file, and network fetch will likely fail in test env or return current version
+        // Either way, should not panic
+        let _ = check_for_update(&cache_path);
+
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

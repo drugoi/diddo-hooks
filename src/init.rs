@@ -848,6 +848,7 @@ mod tests {
         AppPaths {
             db_path: hooks_dir.join("ignored.db"),
             config_path: hooks_dir.join("ignored.toml"),
+            update_cache_path: hooks_dir.join("ignored_update_check.json"),
             hooks_dir,
         }
     }
