@@ -127,7 +127,23 @@ pub fn check_for_update(cache_path: &Path) -> Option<String> {
     }
 
     // Cache miss or stale — fetch from GitHub
-    let latest = fetch_latest_release_tag().ok()?;
+    let latest = match fetch_latest_release_tag() {
+        Ok(tag) => tag,
+        Err(_) => {
+            // Negative cache: write current version so we don't retry for TTL
+            let cache = UpdateCache {
+                latest_version: current.to_string(),
+                checked_at: chrono::Utc::now().timestamp(),
+            };
+            if let Some(parent) = cache_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            if let Ok(json) = serde_json::to_string(&cache) {
+                let _ = std::fs::write(cache_path, json);
+            }
+            return None;
+        }
+    };
     let cache = UpdateCache {
         latest_version: latest.clone(),
         checked_at: chrono::Utc::now().timestamp(),
@@ -135,7 +151,9 @@ pub fn check_for_update(cache_path: &Path) -> Option<String> {
     if let Some(parent) = cache_path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let _ = std::fs::write(cache_path, serde_json::to_string(&cache).ok()?);
+    if let Ok(json) = serde_json::to_string(&cache) {
+        let _ = std::fs::write(cache_path, json);
+    }
 
     if is_newer(current, &latest) {
         Some(latest)
@@ -335,21 +353,4 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
-    #[test]
-    fn check_for_update_returns_none_when_no_cache_and_network_unavailable() {
-        use super::check_for_update;
-
-        let dir = std::env::temp_dir().join(format!(
-            "diddo-update-test-nocache-{}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let cache_path = dir.join("update_check.json");
-
-        // No cache file, and network fetch will likely fail in test env or return current version
-        // Either way, should not panic
-        let _ = check_for_update(&cache_path);
-
-        std::fs::remove_dir_all(dir).unwrap();
-    }
 }

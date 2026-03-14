@@ -271,7 +271,7 @@ fn main() {
 
 fn spawn_update_check(
     cli: &ParsedCli,
-) -> Option<std::thread::JoinHandle<Option<String>>> {
+) -> Option<std::sync::mpsc::Receiver<Option<String>>> {
     // Skip for Hook and Update commands
     if matches!(
         cli.command,
@@ -287,9 +287,11 @@ fn spawn_update_check(
     }
 
     let cache_path = paths.update_cache_path;
-    Some(std::thread::spawn(move || {
-        update::check_for_update(&cache_path)
-    }))
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(update::check_for_update(&cache_path));
+    });
+    Some(rx)
 }
 
 fn run_cli(cli: ParsedCli) {
@@ -305,18 +307,18 @@ fn run_cli(cli: ParsedCli) {
         _ => run_summary_command(cli),
     };
 
-    if let Some(handle) = update_handle {
-        if let Ok(Some(latest)) = handle.join() {
-            eprintln!(
-                "Update available: {} \u{2192} {latest}, run `diddo update`",
-                env!("CARGO_PKG_VERSION")
-            );
-        }
-    }
-
     if let Err(error) = result {
         eprintln!("{error}");
         std::process::exit(1);
+    }
+
+    if let Some(rx) = update_handle {
+        if let Ok(Some(latest)) = rx.recv_timeout(StdDuration::from_millis(50)) {
+            eprintln!(
+                "Update available: {} → {latest}, run `diddo update`",
+                env!("CARGO_PKG_VERSION")
+            );
+        }
     }
 }
 
