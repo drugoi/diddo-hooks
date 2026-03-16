@@ -310,13 +310,13 @@ fn run_cli(cli: ParsedCli) {
         std::process::exit(1);
     }
 
-    if let Some(rx) = update_handle {
-        if let Ok(Some(latest)) = rx.recv_timeout(StdDuration::from_millis(50)) {
-            eprintln!(
-                "Update available: {} → {latest}, run `diddo update`",
-                env!("CARGO_PKG_VERSION")
-            );
-        }
+    if let Some(rx) = update_handle
+        && let Ok(Some(latest)) = rx.recv_timeout(StdDuration::from_millis(50))
+    {
+        eprintln!(
+            "Update available: {} → {latest}, run `diddo update`",
+            env!("CARGO_PKG_VERSION")
+        );
     }
 }
 

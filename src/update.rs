@@ -113,16 +113,16 @@ pub fn check_for_update(cache_path: &Path) -> Option<String> {
     let current = env!("CARGO_PKG_VERSION");
 
     // Try reading cached result
-    if let Ok(contents) = std::fs::read_to_string(cache_path) {
-        if let Ok(cache) = serde_json::from_str::<UpdateCache>(&contents) {
-            let now = chrono::Utc::now().timestamp();
-            if now - cache.checked_at < CACHE_TTL_SECS {
-                return if is_newer(current, &cache.latest_version) {
-                    Some(cache.latest_version)
-                } else {
-                    None
-                };
-            }
+    if let Ok(contents) = std::fs::read_to_string(cache_path)
+        && let Ok(cache) = serde_json::from_str::<UpdateCache>(&contents)
+    {
+        let now = chrono::Utc::now().timestamp();
+        if now - cache.checked_at < CACHE_TTL_SECS {
+            return if is_newer(current, &cache.latest_version) {
+                Some(cache.latest_version)
+            } else {
+                None
+            };
         }
     }
 
