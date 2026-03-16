@@ -82,6 +82,26 @@ What `diddo init` does:
 
 On **Windows**, global hooks run only if you use **Git for Windows** (or another Git that runs hook scripts with a Unix-like shell). The generated hooks are `#!/bin/sh` scripts; Git for Windows runs them with its bundled sh.
 
+### Repositories with local hooks (Husky, etc.)
+
+Repositories that set a local `core.hooksPath` (e.g. Husky’s `.husky`) override the global path. Git only runs hooks from the local directory, so the global hooks are never invoked.
+
+Run `diddo init` from within such a repo to add a `post-commit` hook to the local hooks directory. This ensures commits are recorded:
+
+```bash
+cd your-husky-repo
+diddo init
+```
+
+You’ll see:
+
+```text
+Installed diddo hooks in ... and updated global core.hooksPath.
+Also added diddo post-commit to this repo's local hooks (.husky) so commits are recorded.
+```
+
+If a `post-commit` already exists in that directory, it is backed up as `post-commit.diddo-prev` and the new script chains to it.
+
 `diddo` only records commits made after setup. It does not backfill old git history into the database.
 
 To see where `diddo` stores its config, database, and managed hooks on your machine:
@@ -365,6 +385,7 @@ Current uninstall behavior:
 - Restores the previous global `core.hooksPath` if `diddo` still owns that setting
 - Unsets global `core.hooksPath` if `diddo` created it and there was no previous value
 - Leaves the current global `core.hooksPath` untouched if you changed it after installing `diddo`
+- Does not remove `post-commit` hooks added to local hooks directories (e.g. `.husky`); remove those manually if desired
 
 ## License
 
