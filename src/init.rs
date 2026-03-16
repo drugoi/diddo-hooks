@@ -78,8 +78,8 @@ pub fn install(paths: &AppPaths) -> io::Result<()> {
 
     if let Ok(Some((local_raw, local_resolved))) = get_local_hooks_dir()
         && !same_path(&local_resolved, &paths.hooks_dir)
-        && install_local_hook(paths, &local_resolved, &local_raw).is_ok()
     {
+        install_local_hook(paths, &local_resolved, &local_raw)?;
         println!(
             "Also added diddo post-commit to this repo's local hooks ({}) so commits are recorded.",
             local_raw
@@ -475,7 +475,11 @@ fn install_local_hook(
     let previous_hooks_path = if post_commit_path.exists() {
         let contents = fs::read_to_string(&post_commit_path).unwrap_or_default();
         if contents.contains(DIDDO_MANAGED_MARKER) {
-            None
+            if prev_path.exists() {
+                Some(local_hooks_dir.display().to_string())
+            } else {
+                None
+            }
         } else {
             fs::rename(&post_commit_path, &prev_path)?;
             Some(local_hooks_dir.display().to_string())
@@ -1083,6 +1087,42 @@ mod tests {
         let script = fs::read_to_string(&post_commit).unwrap();
         assert!(script.contains("diddo hook"));
         assert!(script.contains(POST_COMMIT_DIDDO_PREV));
+    }
+
+    #[test]
+    fn install_local_hook_preserves_chain_when_re_run_on_diddo_managed_hook() {
+        let temp = temp_dir("local-hooks-rerun");
+        let husky_dir = temp.join(".husky");
+        fs::create_dir_all(&husky_dir).unwrap();
+
+        let existing_post_commit = husky_dir.join("post-commit");
+        fs::write(&existing_post_commit, "#!/bin/sh\necho 'custom hook'\n").unwrap();
+
+        Command::new("git")
+            .args(["init"])
+            .current_dir(&temp)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "core.hooksPath", ".husky"])
+            .current_dir(&temp)
+            .output()
+            .unwrap();
+
+        let paths = test_paths(temp.join("managed-hooks"));
+        install_local_hook(&paths, &husky_dir, ".husky").unwrap();
+        let prev_path = husky_dir.join(POST_COMMIT_DIDDO_PREV);
+        assert!(prev_path.exists());
+
+        install_local_hook(&paths, &husky_dir, ".husky").unwrap();
+
+        let post_commit = husky_dir.join("post-commit");
+        let script = fs::read_to_string(&post_commit).unwrap();
+        assert!(script.contains(POST_COMMIT_DIDDO_PREV));
+        assert_eq!(
+            fs::read_to_string(&prev_path).unwrap(),
+            "#!/bin/sh\necho 'custom hook'\n"
+        );
     }
 
     fn temp_dir(prefix: &str) -> PathBuf {
