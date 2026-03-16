@@ -187,7 +187,17 @@ where
     I: IntoIterator<Item = T>,
     T: Into<OsString>,
 {
-    let args: Vec<OsString> = args.into_iter().map(Into::into).collect();
+    let args: Vec<OsString> = args
+        .into_iter()
+        .map(|a| {
+            let o: OsString = a.into();
+            if o.to_str() == Some("-v") {
+                OsString::from("--version")
+            } else {
+                o
+            }
+        })
+        .collect();
     let second = args.get(1).and_then(|arg| arg.to_str());
     let only_option_args = args
         .iter()
@@ -247,7 +257,7 @@ fn main() {
     let is_bare_invocation = raw_args.len() == 1
         || raw_args.iter().skip(1).all(|arg| {
             arg.to_str().is_some_and(|s| {
-                s.starts_with('-') && !matches!(s, "-h" | "--help" | "-V" | "--version")
+                s.starts_with('-') && !matches!(s, "-h" | "--help" | "-V" | "--version" | "-v")
             })
         });
 
@@ -683,60 +693,56 @@ where
             };
             let summary = if let Some(cached_summary) = cached {
                 Some(cached_summary)
-            } else {
-                if show_indicator {
-                    let pb = ProgressBar::new_spinner();
-                    pb.set_style(
-                        ProgressStyle::default_spinner()
-                            .template("{spinner} {msg}")
-                            .unwrap(),
-                    );
-                    pb.set_message("Generating AI summary...");
-                    pb.enable_steady_tick(StdDuration::from_millis(80));
-                    let attempt = match provider.summarize(&profile_commits, period) {
-                        Ok(s) => AiSummaryAttempt {
-                            summary: Some(s),
-                            warning: None,
-                        },
-                        Err(error) => AiSummaryAttempt {
-                            summary: None,
-                            warning: Some(format!(
-                                "AI summary failed: {error}. Falling back to raw output."
-                            )),
-                        },
-                    };
-                    pb.finish_and_clear();
-                    if let Some(ref w) = attempt.warning {
-                        warnings.push(w.clone());
-                    }
-                    if let (Some(key), Some(s)) = (cache_key_opt.as_ref(), attempt.summary.as_ref())
-                    {
-                        let _ = database.set_cached_summary(key, s);
-                    }
-                    attempt.summary
-                } else {
-                    eprintln!("Generating AI summary...");
-                    let attempt = match provider.summarize(&profile_commits, period) {
-                        Ok(s) => AiSummaryAttempt {
-                            summary: Some(s),
-                            warning: None,
-                        },
-                        Err(error) => AiSummaryAttempt {
-                            summary: None,
-                            warning: Some(format!(
-                                "AI summary failed: {error}. Falling back to raw output."
-                            )),
-                        },
-                    };
-                    if let Some(ref w) = attempt.warning {
-                        warnings.push(w.clone());
-                    }
-                    if let (Some(key), Some(s)) = (cache_key_opt.as_ref(), attempt.summary.as_ref())
-                    {
-                        let _ = database.set_cached_summary(key, s);
-                    }
-                    attempt.summary
+            } else if show_indicator {
+                let pb = ProgressBar::new_spinner();
+                pb.set_style(
+                    ProgressStyle::default_spinner()
+                        .template("{spinner} {msg}")
+                        .unwrap(),
+                );
+                pb.set_message("Generating AI summary...");
+                pb.enable_steady_tick(StdDuration::from_millis(80));
+                let attempt = match provider.summarize(&profile_commits, period) {
+                    Ok(s) => AiSummaryAttempt {
+                        summary: Some(s),
+                        warning: None,
+                    },
+                    Err(error) => AiSummaryAttempt {
+                        summary: None,
+                        warning: Some(format!(
+                            "AI summary failed: {error}. Falling back to raw output."
+                        )),
+                    },
+                };
+                pb.finish_and_clear();
+                if let Some(ref w) = attempt.warning {
+                    warnings.push(w.clone());
                 }
+                if let (Some(key), Some(s)) = (cache_key_opt.as_ref(), attempt.summary.as_ref()) {
+                    let _ = database.set_cached_summary(key, s);
+                }
+                attempt.summary
+            } else {
+                eprintln!("Generating AI summary...");
+                let attempt = match provider.summarize(&profile_commits, period) {
+                    Ok(s) => AiSummaryAttempt {
+                        summary: Some(s),
+                        warning: None,
+                    },
+                    Err(error) => AiSummaryAttempt {
+                        summary: None,
+                        warning: Some(format!(
+                            "AI summary failed: {error}. Falling back to raw output."
+                        )),
+                    },
+                };
+                if let Some(ref w) = attempt.warning {
+                    warnings.push(w.clone());
+                }
+                if let (Some(key), Some(s)) = (cache_key_opt.as_ref(), attempt.summary.as_ref()) {
+                    let _ = database.set_cached_summary(key, s);
+                }
+                attempt.summary
             };
             if let Some(s) = summary {
                 profile_group.ai_summary = Some(s);
@@ -1208,6 +1214,13 @@ mod tests {
     #[test]
     fn supports_short_version_flag() {
         let error = parse_cli(["diddo", "-V"]).unwrap_err();
+
+        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayVersion);
+    }
+
+    #[test]
+    fn supports_lowercase_version_flag() {
+        let error = parse_cli(["diddo", "-v"]).unwrap_err();
 
         assert_eq!(error.kind(), clap::error::ErrorKind::DisplayVersion);
     }
