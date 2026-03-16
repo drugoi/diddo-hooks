@@ -6,6 +6,27 @@ use std::{
 
 use crate::paths::AppPaths;
 
+#[derive(Debug)]
+pub struct HooksStatus {
+    pub global: GlobalHookStatus,
+    pub local: LocalHookStatus,
+}
+
+#[derive(Debug)]
+pub enum GlobalHookStatus {
+    ManagedByDiddo(String),
+    Other(String),
+    NotSet,
+}
+
+#[derive(Debug)]
+pub enum LocalHookStatus {
+    DiddoInstalled(String),
+    NoDiddoHook(String),
+    NotSet,
+    NotInRepo,
+}
+
 const POST_COMMIT_FILE: &str = "post-commit";
 const POST_COMMIT_DIDDO_PREV: &str = "post-commit.diddo-prev";
 const DIDDO_MANAGED_MARKER: &str = "# diddo-managed";
@@ -97,6 +118,42 @@ pub fn uninstall() -> io::Result<()> {
     }
 
     Ok(())
+}
+
+pub fn hooks_status(paths: &AppPaths) -> io::Result<HooksStatus> {
+    let global = match get_global_hooks_dir()? {
+        Some(state) => {
+            if same_path(&state.resolved, &paths.hooks_dir) {
+                GlobalHookStatus::ManagedByDiddo(state.raw)
+            } else {
+                GlobalHookStatus::Other(state.raw)
+            }
+        }
+        None => GlobalHookStatus::NotSet,
+    };
+
+    let local = match get_local_hooks_dir() {
+        Ok(Some((raw, resolved))) => {
+            let post_commit = resolved.join(POST_COMMIT_FILE);
+            if post_commit.exists() {
+                let contents = fs::read_to_string(&post_commit).unwrap_or_default();
+                if contents.contains(DIDDO_MANAGED_MARKER) {
+                    LocalHookStatus::DiddoInstalled(raw)
+                } else {
+                    LocalHookStatus::NoDiddoHook(raw)
+                }
+            } else {
+                LocalHookStatus::NoDiddoHook(raw)
+            }
+        }
+        Ok(None) => match get_repo_root() {
+            Ok(Some(_)) => LocalHookStatus::NotSet,
+            _ => LocalHookStatus::NotInRepo,
+        },
+        Err(_) => LocalHookStatus::NotInRepo,
+    };
+
+    Ok(HooksStatus { global, local })
 }
 
 fn build_post_commit_script(previous_hooks_path: Option<&str>) -> String {

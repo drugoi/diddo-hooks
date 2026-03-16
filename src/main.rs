@@ -352,8 +352,9 @@ fn run_metadata_command() -> Result<(), Box<dyn Error>> {
     let paths = paths::AppPaths::new()?;
     let database = db::Database::open(&paths.db_path)?;
     let size_bytes = std::fs::metadata(&paths.db_path)?.len();
+    let hooks_status = init::hooks_status(&paths)?;
 
-    println!("{}", format_metadata(&database, size_bytes)?);
+    println!("{}", format_metadata(&database, size_bytes, &hooks_status)?);
 
     Ok(())
 }
@@ -362,7 +363,11 @@ fn run_update_command(args: UpdateArgs) -> Result<(), Box<dyn Error>> {
     update::run(args.yes)
 }
 
-fn format_metadata(database: &db::Database, size_bytes: u64) -> Result<String, Box<dyn Error>> {
+fn format_metadata(
+    database: &db::Database,
+    size_bytes: u64,
+    hooks_status: &init::HooksStatus,
+) -> Result<String, Box<dyn Error>> {
     let count = database.commit_count()?;
     let oldest = match database.oldest_commit_date()? {
         Some(raw) => chrono::DateTime::parse_from_rfc3339(&raw)
@@ -375,8 +380,23 @@ fn format_metadata(database: &db::Database, size_bytes: u64) -> Result<String, B
         None => "-".to_string(),
     };
 
+    let global_hooks = match &hooks_status.global {
+        init::GlobalHookStatus::ManagedByDiddo(path) => format!("{path} (ok)"),
+        init::GlobalHookStatus::Other(path) => format!("{path} (not managed by diddo)"),
+        init::GlobalHookStatus::NotSet => "not set (run 'diddo init')".to_string(),
+    };
+
+    let local_hooks = match &hooks_status.local {
+        init::LocalHookStatus::DiddoInstalled(path) => format!("{path} (ok)"),
+        init::LocalHookStatus::NoDiddoHook(path) => {
+            format!("{path} (missing diddo hook — run 'diddo init')")
+        }
+        init::LocalHookStatus::NotSet => "not set".to_string(),
+        init::LocalHookStatus::NotInRepo => "not in a git repository".to_string(),
+    };
+
     Ok(format!(
-        "Database size:   {}\nTotal commits:   {count}\nOldest commit:   {oldest}",
+        "Database size:   {}\nTotal commits:   {count}\nOldest commit:   {oldest}\n\nGlobal hooks:    {global_hooks}\nLocal hooks:     {local_hooks}",
         format_file_size(size_bytes)
     ))
 }
@@ -1811,6 +1831,13 @@ mod tests {
         }
     }
 
+    fn test_hooks_status() -> crate::init::HooksStatus {
+        crate::init::HooksStatus {
+            global: crate::init::GlobalHookStatus::NotSet,
+            local: crate::init::LocalHookStatus::NotInRepo,
+        }
+    }
+
     struct SuccessProvider(String);
 
     impl AiProvider for SuccessProvider {
@@ -1927,8 +1954,9 @@ mod tests {
     #[test]
     fn metadata_shows_size_count_and_oldest_for_empty_database() {
         let database = crate::db::Database::open_in_memory().unwrap();
+        let status = test_hooks_status();
 
-        let output = format_metadata(&database, 0).unwrap();
+        let output = format_metadata(&database, 0, &status).unwrap();
 
         assert!(output.contains("Database size:   0 bytes"));
         assert!(output.contains("Total commits:   0"));
@@ -1938,6 +1966,7 @@ mod tests {
     #[test]
     fn metadata_shows_correct_stats_after_inserting_commits() {
         let database = crate::db::Database::open_in_memory().unwrap();
+        let status = test_hooks_status();
 
         let earlier = Utc.with_ymd_and_hms(2026, 3, 8, 10, 0, 0).unwrap();
         let later = Utc.with_ymd_and_hms(2026, 3, 10, 14, 0, 0).unwrap();
@@ -1954,13 +1983,43 @@ mod tests {
             .insert_commit(&sample_commit_at("bbb2222", "repo-b", "/tmp/repo-b", later))
             .unwrap();
 
-        let output = format_metadata(&database, 50 * 1024 * 1024).unwrap();
+        let output = format_metadata(&database, 50 * 1024 * 1024, &status).unwrap();
 
         assert!(output.contains("Database size:   50.00 MB"));
         assert!(output.contains("Total commits:   2"));
         // The oldest commit line should contain a formatted date, not "-"
         assert!(!output.contains("Oldest commit:   -"));
         assert!(output.contains("Oldest commit:   2026-03-08"));
+    }
+
+    #[test]
+    fn metadata_shows_global_hooks_managed_by_diddo() {
+        let database = crate::db::Database::open_in_memory().unwrap();
+        let status = crate::init::HooksStatus {
+            global: crate::init::GlobalHookStatus::ManagedByDiddo(
+                "~/.config/diddo/hooks".to_string(),
+            ),
+            local: crate::init::LocalHookStatus::NotSet,
+        };
+
+        let output = format_metadata(&database, 0, &status).unwrap();
+
+        assert!(output.contains("Global hooks:    ~/.config/diddo/hooks (ok)"));
+        assert!(output.contains("Local hooks:     not set"));
+    }
+
+    #[test]
+    fn metadata_shows_local_hooks_missing_diddo() {
+        let database = crate::db::Database::open_in_memory().unwrap();
+        let status = crate::init::HooksStatus {
+            global: crate::init::GlobalHookStatus::NotSet,
+            local: crate::init::LocalHookStatus::NoDiddoHook(".husky".to_string()),
+        };
+
+        let output = format_metadata(&database, 0, &status).unwrap();
+
+        assert!(output.contains("Global hooks:    not set (run 'diddo init')"));
+        assert!(output.contains("Local hooks:     .husky (missing diddo hook"));
     }
 
     #[test]
