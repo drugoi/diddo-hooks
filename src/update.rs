@@ -335,10 +335,8 @@ mod tests {
     fn check_for_update_returns_some_when_cache_has_newer_version() {
         use super::{UpdateCache, check_for_update};
 
-        let dir = std::env::temp_dir().join(format!(
-            "diddo-update-test-newer-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("diddo-update-test-newer-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let cache_path = dir.join("update_check.json");
 
@@ -352,5 +350,4 @@ mod tests {
 
         std::fs::remove_dir_all(dir).unwrap();
     }
-
 }

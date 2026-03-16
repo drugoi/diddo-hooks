@@ -269,9 +269,7 @@ fn main() {
     run_cli(cli);
 }
 
-fn spawn_update_check(
-    cli: &ParsedCli,
-) -> Option<std::sync::mpsc::Receiver<Option<String>>> {
+fn spawn_update_check(cli: &ParsedCli) -> Option<std::sync::mpsc::Receiver<Option<String>>> {
     // Skip for Hook and Update commands
     if matches!(
         cli.command,

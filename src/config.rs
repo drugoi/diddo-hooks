@@ -489,11 +489,7 @@ prompt_instructions = "  \n\t "
         let temp = temp_dir("update-disabled");
         let config_path = temp.join("config.toml");
 
-        fs::write(
-            &config_path,
-            "[update]\nauto_check = false\n",
-        )
-        .unwrap();
+        fs::write(&config_path, "[update]\nauto_check = false\n").unwrap();
 
         let config = AppConfig::load(&config_path).unwrap();
 
