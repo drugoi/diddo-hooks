@@ -227,7 +227,7 @@ diddo metadata
 diddo update
 ```
 
-- **`diddo metadata`** — Show database metadata: file size, total commit count, and oldest recorded commit.
+- **`diddo metadata`** — Show database metadata: file size, total commit count, oldest recorded commit, and hooks status (global and local). Use it to verify your setup; it shows hints when something is misconfigured (e.g. `Local hooks: .husky (missing diddo hook — run 'diddo init')`).
 - **`diddo update`** — Self-update to the latest release (detects Homebrew vs GitHub install; use `--yes` to skip the confirmation prompt).
 
 ## AI Providers
