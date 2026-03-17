@@ -279,7 +279,32 @@ fn main() {
     run_cli(cli);
 }
 
+fn spawn_update_check(cli: &ParsedCli) -> Option<std::sync::mpsc::Receiver<Option<String>>> {
+    // Skip for Hook and Update commands
+    if matches!(
+        cli.command,
+        Some(Commands::Hook) | Some(Commands::Update(_))
+    ) {
+        return None;
+    }
+
+    let paths = paths::AppPaths::new().ok()?;
+    let app_config = config::AppConfig::load(&paths.config_path).ok()?;
+    if !app_config.update.auto_check {
+        return None;
+    }
+
+    let cache_path = paths.update_cache_path;
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(update::check_for_update(&cache_path));
+    });
+    Some(rx)
+}
+
 fn run_cli(cli: ParsedCli) {
+    let update_handle = spawn_update_check(&cli);
+
     let result = match cli.command {
         Some(Commands::Init) => run_init_command(),
         Some(Commands::Uninstall) => run_uninstall_command(),
@@ -293,6 +318,15 @@ fn run_cli(cli: ParsedCli) {
     if let Err(error) = result {
         eprintln!("{error}");
         std::process::exit(1);
+    }
+
+    if let Some(rx) = update_handle
+        && let Ok(Some(latest)) = rx.recv_timeout(StdDuration::from_millis(50))
+    {
+        eprintln!(
+            "Update available: {} → {latest}, run `diddo update`",
+            env!("CARGO_PKG_VERSION")
+        );
     }
 }
 
@@ -1780,6 +1814,7 @@ mod tests {
             db_path: PathBuf::from("/tmp/diddo/commits.db"),
             config_path: PathBuf::from("/tmp/diddo/config.toml"),
             hooks_dir: PathBuf::from("/tmp/diddo/hooks"),
+            update_cache_path: PathBuf::from("/tmp/diddo/update_check.json"),
         };
 
         assert_eq!(

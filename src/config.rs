@@ -6,6 +6,19 @@ use serde::Deserialize;
 #[serde(default)]
 pub struct AppConfig {
     pub ai: AiConfig,
+    pub update: UpdateConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct UpdateConfig {
+    pub auto_check: bool,
+}
+
+impl Default for UpdateConfig {
+    fn default() -> Self {
+        Self { auto_check: true }
+    }
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
@@ -457,6 +470,32 @@ prompt_instructions = "  \n\t "
         let path = std::env::temp_dir().join(unique);
         fs::create_dir_all(&path).unwrap();
         path
+    }
+
+    #[test]
+    fn update_auto_check_defaults_to_true() {
+        let temp = temp_dir("update-default");
+        let missing = temp.join("config.toml");
+
+        let config = AppConfig::load(&missing).unwrap();
+
+        assert!(config.update.auto_check);
+
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn update_auto_check_can_be_disabled() {
+        let temp = temp_dir("update-disabled");
+        let config_path = temp.join("config.toml");
+
+        fs::write(&config_path, "[update]\nauto_check = false\n").unwrap();
+
+        let config = AppConfig::load(&config_path).unwrap();
+
+        assert!(!config.update.auto_check);
+
+        fs::remove_dir_all(temp).unwrap();
     }
 
     fn env_lock() -> &'static Mutex<()> {
