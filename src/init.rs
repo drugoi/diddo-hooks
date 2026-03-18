@@ -6,7 +6,30 @@ use std::{
 
 use crate::paths::AppPaths;
 
+#[derive(Debug)]
+pub struct HooksStatus {
+    pub global: GlobalHookStatus,
+    pub local: LocalHookStatus,
+}
+
+#[derive(Debug)]
+pub enum GlobalHookStatus {
+    ManagedByDiddo(String),
+    Other(String),
+    NotSet,
+}
+
+#[derive(Debug)]
+pub enum LocalHookStatus {
+    DiddoInstalled(String),
+    NoDiddoHook(String),
+    NotSet,
+    NotInRepo,
+}
+
 const POST_COMMIT_FILE: &str = "post-commit";
+const POST_COMMIT_DIDDO_PREV: &str = "post-commit.diddo-prev";
+const DIDDO_MANAGED_MARKER: &str = "# diddo-managed";
 const STATE_FILE: &str = "diddo-managed-state";
 const HOOK_NAMES: &[&str] = &[
     "applypatch-msg",
@@ -52,6 +75,17 @@ pub fn install(paths: &AppPaths) -> io::Result<()> {
         "Installed diddo hooks in {} and updated global core.hooksPath.",
         paths.hooks_dir.display()
     );
+
+    if let Ok(Some((local_raw, local_resolved))) = get_local_hooks_dir()
+        && !same_path(&local_resolved, &paths.hooks_dir)
+    {
+        install_local_hook(paths, &local_resolved, &local_raw)?;
+        println!(
+            "Also added diddo post-commit to this repo's local hooks ({}) so commits are recorded.",
+            local_raw
+        );
+    }
+
     Ok(())
 }
 
@@ -86,8 +120,46 @@ pub fn uninstall() -> io::Result<()> {
     Ok(())
 }
 
+pub fn hooks_status(paths: &AppPaths) -> io::Result<HooksStatus> {
+    let global = match get_global_hooks_dir()? {
+        Some(state) => {
+            if same_path(&state.resolved, &paths.hooks_dir) {
+                GlobalHookStatus::ManagedByDiddo(state.raw)
+            } else {
+                GlobalHookStatus::Other(state.raw)
+            }
+        }
+        None => GlobalHookStatus::NotSet,
+    };
+
+    let local = match get_local_hooks_dir() {
+        Ok(Some((raw, resolved))) => {
+            let post_commit = resolved.join(POST_COMMIT_FILE);
+            if post_commit.exists() {
+                let contents = fs::read_to_string(&post_commit).unwrap_or_default();
+                if contents.contains(DIDDO_MANAGED_MARKER) {
+                    LocalHookStatus::DiddoInstalled(raw)
+                } else {
+                    LocalHookStatus::NoDiddoHook(raw)
+                }
+            } else {
+                LocalHookStatus::NoDiddoHook(raw)
+            }
+        }
+        Ok(None) => match get_repo_root() {
+            Ok(Some(_)) => LocalHookStatus::NotSet,
+            _ => LocalHookStatus::NotInRepo,
+        },
+        Err(_) => LocalHookStatus::NotInRepo,
+    };
+
+    Ok(HooksStatus { global, local })
+}
+
 fn build_post_commit_script(previous_hooks_path: Option<&str>) -> String {
-    let mut script = String::from("#!/bin/sh\nset -u\n\ndiddo_status=0\n");
+    let mut script = String::from("#!/bin/sh\nset -u\n");
+    script.push_str(DIDDO_MANAGED_MARKER);
+    script.push_str("\n\ndiddo_status=0\n");
 
     match resolve_diddo_executable() {
         Ok(Some(diddo_path)) => {
@@ -337,6 +409,128 @@ fn get_global_hooks_dir() -> io::Result<Option<HookPathState>> {
     ))
 }
 
+fn get_repo_root() -> io::Result<Option<PathBuf>> {
+    let output = Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .output()?;
+
+    if output.status.success() {
+        let raw = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if raw.is_empty() {
+            return Ok(None);
+        }
+        return Ok(Some(PathBuf::from(raw)));
+    }
+
+    if output.status.code() == Some(128) {
+        return Ok(None);
+    }
+
+    Err(git_config_error(
+        &["rev-parse", "--show-toplevel"],
+        &output.stderr,
+    ))
+}
+
+fn get_local_hooks_dir() -> io::Result<Option<(String, PathBuf)>> {
+    let repo_root = match get_repo_root()? {
+        Some(r) => r,
+        None => return Ok(None),
+    };
+
+    let output = Command::new("git")
+        .args(["config", "--local", "--get", "core.hooksPath"])
+        .output()?;
+
+    if !output.status.success() {
+        if output.status.code() == Some(1) {
+            return Ok(None);
+        }
+        return Err(git_config_error(
+            &["config", "--local", "--get", "core.hooksPath"],
+            &output.stderr,
+        ));
+    }
+
+    let raw = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if raw.is_empty() {
+        return Ok(None);
+    }
+
+    let resolved = resolve_hooks_path_for_comparison(&raw, &repo_root, home_dir().as_deref())?;
+
+    Ok(Some((raw, resolved)))
+}
+
+fn install_local_hook(
+    _paths: &AppPaths,
+    local_hooks_dir: &Path,
+    _local_raw: &str,
+) -> io::Result<()> {
+    fs::create_dir_all(local_hooks_dir)?;
+
+    let post_commit_path = local_hooks_dir.join(POST_COMMIT_FILE);
+    let prev_path = local_hooks_dir.join(POST_COMMIT_DIDDO_PREV);
+
+    let previous_hooks_path = if post_commit_path.exists() {
+        let contents = fs::read_to_string(&post_commit_path).unwrap_or_default();
+        if contents.contains(DIDDO_MANAGED_MARKER) {
+            if prev_path.exists() {
+                Some(local_hooks_dir.display().to_string())
+            } else {
+                None
+            }
+        } else {
+            fs::rename(&post_commit_path, &prev_path)?;
+            Some(local_hooks_dir.display().to_string())
+        }
+    } else {
+        None
+    };
+
+    let script = if previous_hooks_path.is_some() {
+        build_post_commit_script_with_previous(
+            &local_hooks_dir.display().to_string(),
+            POST_COMMIT_DIDDO_PREV,
+        )
+    } else {
+        build_post_commit_script(None)
+    };
+
+    fs::write(&post_commit_path, script)?;
+    set_executable_if_unix(&post_commit_path)?;
+
+    Ok(())
+}
+
+fn build_post_commit_script_with_previous(path: &str, hook_name: &str) -> String {
+    let mut script = String::from("#!/bin/sh\nset -u\n");
+    script.push_str(DIDDO_MANAGED_MARKER);
+    script.push_str("\n\ndiddo_status=0\n");
+
+    match resolve_diddo_executable() {
+        Ok(Some(diddo_path)) => {
+            script.push_str(&format!(
+                "diddo_path={}\nif [ -x \"$diddo_path\" ]; then\n  \"$diddo_path\" hook || diddo_status=$?\nelse\n  diddo hook || diddo_status=$?\nfi\n",
+                shell_single_quote(&path_for_script(&diddo_path))
+            ));
+        }
+        _ => script.push_str("diddo hook || diddo_status=$?\n"),
+    }
+
+    script.push('\n');
+    script.push_str("previous_status=0\n");
+    script.push_str(&build_previous_hook_invocation(
+        path,
+        hook_name,
+        "previous_status",
+    ));
+    script.push_str("\nif [ \"$previous_status\" -ne 0 ]; then\n  exit \"$previous_status\"\nfi\n");
+    script.push_str("\nif [ \"$diddo_status\" -ne 0 ]; then\n  exit \"$diddo_status\"\nfi\n");
+
+    script
+}
+
 fn set_global_hooks_dir(path: &Path) -> io::Result<()> {
     let output = Command::new("git")
         .args(["config", "--global", "core.hooksPath"])
@@ -499,10 +693,12 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
+    use std::process::Command;
+
     use super::{
-        HookPathState, STATE_FILE, build_forwarding_hook_script, build_post_commit_script,
-        install_with, path_for_script, resolve_diddo_executable, resolve_hooks_path_for_comparison,
-        uninstall_with,
+        HookPathState, POST_COMMIT_DIDDO_PREV, STATE_FILE, build_forwarding_hook_script,
+        build_post_commit_script, install_local_hook, install_with, path_for_script,
+        resolve_diddo_executable, resolve_hooks_path_for_comparison, uninstall_with,
     };
     use crate::paths::AppPaths;
 
@@ -828,6 +1024,105 @@ mod tests {
         assert_eq!(restored_path_for_assert.lock().unwrap().clone(), None);
         assert!(!*unset_called_for_assert.lock().unwrap());
         assert!(!hooks_dir.exists());
+    }
+
+    #[test]
+    fn install_local_hook_adds_post_commit_to_repo_with_local_hooks_path() {
+        let temp = temp_dir("local-hooks");
+        let husky_dir = temp.join(".husky");
+        fs::create_dir_all(&husky_dir).unwrap();
+
+        Command::new("git")
+            .args(["init"])
+            .current_dir(&temp)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "core.hooksPath", ".husky"])
+            .current_dir(&temp)
+            .output()
+            .unwrap();
+
+        let paths = test_paths(temp.join("managed-hooks"));
+        install_local_hook(&paths, &husky_dir, ".husky").unwrap();
+
+        let post_commit = husky_dir.join("post-commit");
+        assert!(post_commit.exists());
+        let script = fs::read_to_string(&post_commit).unwrap();
+        assert!(script.contains("diddo hook"));
+        assert!(script.contains(super::DIDDO_MANAGED_MARKER));
+    }
+
+    #[test]
+    fn install_local_hook_chains_existing_post_commit_in_local_hooks_dir() {
+        let temp = temp_dir("local-hooks-chain");
+        let husky_dir = temp.join(".husky");
+        fs::create_dir_all(&husky_dir).unwrap();
+
+        let existing_post_commit = husky_dir.join("post-commit");
+        fs::write(&existing_post_commit, "#!/bin/sh\necho 'custom hook'\n").unwrap();
+
+        Command::new("git")
+            .args(["init"])
+            .current_dir(&temp)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "core.hooksPath", ".husky"])
+            .current_dir(&temp)
+            .output()
+            .unwrap();
+
+        let paths = test_paths(temp.join("managed-hooks"));
+        install_local_hook(&paths, &husky_dir, ".husky").unwrap();
+
+        let post_commit = husky_dir.join("post-commit");
+        let prev_path = husky_dir.join(POST_COMMIT_DIDDO_PREV);
+        assert!(post_commit.exists());
+        assert!(prev_path.exists());
+        assert_eq!(
+            fs::read_to_string(&prev_path).unwrap(),
+            "#!/bin/sh\necho 'custom hook'\n"
+        );
+        let script = fs::read_to_string(&post_commit).unwrap();
+        assert!(script.contains("diddo hook"));
+        assert!(script.contains(POST_COMMIT_DIDDO_PREV));
+    }
+
+    #[test]
+    fn install_local_hook_preserves_chain_when_re_run_on_diddo_managed_hook() {
+        let temp = temp_dir("local-hooks-rerun");
+        let husky_dir = temp.join(".husky");
+        fs::create_dir_all(&husky_dir).unwrap();
+
+        let existing_post_commit = husky_dir.join("post-commit");
+        fs::write(&existing_post_commit, "#!/bin/sh\necho 'custom hook'\n").unwrap();
+
+        Command::new("git")
+            .args(["init"])
+            .current_dir(&temp)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "core.hooksPath", ".husky"])
+            .current_dir(&temp)
+            .output()
+            .unwrap();
+
+        let paths = test_paths(temp.join("managed-hooks"));
+        install_local_hook(&paths, &husky_dir, ".husky").unwrap();
+        let prev_path = husky_dir.join(POST_COMMIT_DIDDO_PREV);
+        assert!(prev_path.exists());
+
+        install_local_hook(&paths, &husky_dir, ".husky").unwrap();
+
+        let post_commit = husky_dir.join("post-commit");
+        let script = fs::read_to_string(&post_commit).unwrap();
+        assert!(script.contains(POST_COMMIT_DIDDO_PREV));
+        assert_eq!(
+            fs::read_to_string(&prev_path).unwrap(),
+            "#!/bin/sh\necho 'custom hook'\n"
+        );
     }
 
     fn temp_dir(prefix: &str) -> PathBuf {
