@@ -1455,15 +1455,9 @@ mod tests {
 
         let window = resolve_summary_window(SummarySelection::Month, today).unwrap();
 
-        assert_eq!(
-            window.from,
-            NaiveDate::from_ymd_opt(2026, 2, 10).unwrap()
-        );
+        assert_eq!(window.from, NaiveDate::from_ymd_opt(2026, 2, 10).unwrap());
         assert_eq!(window.to, today);
-        assert_eq!(
-            window.date_label,
-            "2026-02-10 to 2026-03-12 (last 30 days)"
-        );
+        assert_eq!(window.date_label, "2026-02-10 to 2026-03-12 (last 30 days)");
         assert_eq!(window.ai_period, "the last 30 days");
     }
 
@@ -1683,8 +1677,10 @@ mod tests {
     #[test]
     fn renders_useful_empty_period_messages_for_all_output_formats() {
         let terminal = render_empty_summary("2026-03-10 (today)", SummaryArgs::default());
-        let month_terminal =
-            render_empty_summary("2026-02-10 to 2026-03-12 (last 30 days)", SummaryArgs::default());
+        let month_terminal = render_empty_summary(
+            "2026-02-10 to 2026-03-12 (last 30 days)",
+            SummaryArgs::default(),
+        );
         let range_terminal =
             render_empty_summary("2026-03-01 to 2026-03-11", SummaryArgs::default());
         let markdown = render_empty_summary(
