@@ -119,6 +119,41 @@ impl Database {
         Ok(())
     }
 
+    /// Inserts a row only when no commit exists for `(repo_path, hash)`.
+    /// Returns `true` if a new row was inserted. Unlike [`Self::insert_commit`], this does not
+    /// overwrite diff stats or other fields when the commit already exists (e.g. hook vs onboard).
+    pub fn insert_commit_if_new(&self, commit: &Commit) -> Result<bool> {
+        let rows = self.connection.execute(
+            "INSERT INTO commits (
+                hash,
+                message,
+                repo_path,
+                repo_name,
+                branch,
+                files_changed,
+                insertions,
+                deletions,
+                committed_at,
+                author_email
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            ON CONFLICT(repo_path, hash) DO NOTHING",
+            params![
+                &commit.hash,
+                &commit.message,
+                &commit.repo_path,
+                &commit.repo_name,
+                &commit.branch,
+                commit.files_changed,
+                commit.insertions,
+                commit.deletions,
+                commit.committed_at.to_rfc3339(),
+                &commit.author_email,
+            ],
+        )?;
+
+        Ok(rows > 0)
+    }
+
     pub fn query_date(&self, date: NaiveDate) -> Result<Vec<Commit>> {
         let (start, end) = date_range_bounds_local(date, date)?;
         self.query_date_range_raw(&start, &end)

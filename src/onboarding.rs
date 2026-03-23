@@ -187,11 +187,9 @@ where
             })
             .collect();
 
-        let has_new_alias = selected_aliases.iter().any(|a| {
-            !had_before
-                .iter()
-                .any(|h| h.name == a.name && h.email == a.email)
-        });
+        let has_new_alias = selected_aliases
+            .iter()
+            .any(|a| !had_before.iter().any(|h| identity_alias_same(h, a)));
 
         if has_new_alias {
             write_line("\nSave selected identities to config for next time? [y/N] ")?;
@@ -199,10 +197,7 @@ where
             if matches!(yn.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
                 let mut merged = had_before;
                 for a in selected_aliases {
-                    if !merged
-                        .iter()
-                        .any(|h| h.name == a.name && h.email == a.email)
-                    {
+                    if !merged.iter().any(|h| identity_alias_same(h, &a)) {
                         merged.push(a);
                     }
                 }
@@ -456,15 +451,13 @@ pub fn import_commits(
     scanned_total: usize,
     matched_total: usize,
 ) -> Result<ImportOutcome, rusqlite::Error> {
-    let count_before = database.commit_count()?;
-
+    let mut inserted = 0usize;
     for c in commits {
         let row = to_db_commit(c, repo_path, repo_name, branch);
-        database.insert_commit(&row)?;
+        if database.insert_commit_if_new(&row)? {
+            inserted += 1;
+        }
     }
-
-    let count_after = database.commit_count()?;
-    let inserted = (count_after - count_before) as usize;
     let skipped_duplicates = commits.len().saturating_sub(inserted);
 
     Ok(ImportOutcome {
@@ -519,8 +512,20 @@ fn format_identity_line(id: &IdentityCandidate) -> String {
     }
 }
 
+fn optional_str_eq_ignore_case(a: &Option<String>, b: &Option<String>) -> bool {
+    match (a, b) {
+        (Some(x), Some(y)) => x.eq_ignore_ascii_case(y),
+        (None, None) => true,
+        _ => false,
+    }
+}
+
 fn identity_same(a: &IdentityCandidate, b: &IdentityCandidate) -> bool {
-    a.name == b.name && a.email == b.email
+    optional_str_eq_ignore_case(&a.email, &b.email) && optional_str_eq_ignore_case(&a.name, &b.name)
+}
+
+fn identity_alias_same(a: &IdentityAlias, b: &IdentityAlias) -> bool {
+    optional_str_eq_ignore_case(&a.email, &b.email) && optional_str_eq_ignore_case(&a.name, &b.name)
 }
 
 fn parse_identity_selection(
@@ -583,11 +588,27 @@ fn run_git_command(args: &[&str]) -> io::Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use chrono::{DateTime, TimeZone, Utc};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use chrono::{DateTime, NaiveDate, TimeZone, Utc};
 
     use super::*;
     use crate::config::IdentityAlias;
     use crate::db::{Commit, Database};
+
+    fn temp_dir_onboard(label: &str) -> std::path::PathBuf {
+        let unique = format!(
+            "diddo-onboard-{label}-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(unique);
+        std::fs::create_dir_all(&path).unwrap();
+        path
+    }
 
     const TEST_FULL_HASH: &str = "abcd1234abcd1234abcd1234abcd1234abcd1234";
 
@@ -830,6 +851,26 @@ mod tests {
         assert_eq!(database.commit_count().unwrap(), 1);
         assert_eq!(outcome.inserted, 0);
         assert_eq!(outcome.skipped_duplicates, 1);
+
+        let day = NaiveDate::from_ymd_opt(2026, 2, 1).unwrap();
+        let rows = database.query_date(day).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].files_changed, 2);
+        assert_eq!(rows[0].insertions, 1);
+        assert_eq!(rows[0].deletions, 0);
+    }
+
+    #[test]
+    fn identity_same_treats_ascii_case_variants_as_equal() {
+        let a = IdentityCandidate {
+            name: Some("User".to_string()),
+            email: Some("Me@X.com".to_string()),
+        };
+        let b = IdentityCandidate {
+            name: Some("user".to_string()),
+            email: Some("me@x.com".to_string()),
+        };
+        assert!(super::identity_same(&a, &b));
     }
 
     #[test]
@@ -930,7 +971,8 @@ mod tests {
         use std::io;
 
         let database = Database::open_in_memory().unwrap();
-        let config_path = std::env::temp_dir().join("diddo-onboard-empty.toml");
+        let temp = temp_dir_onboard("empty");
+        let config_path = temp.join("config.toml");
         let config = config::AppConfig::default();
 
         let mut lines: VecDeque<String> = VecDeque::new();
@@ -958,6 +1000,7 @@ mod tests {
 
         assert_eq!(outcome.scanned, 0);
         assert_eq!(outcome.inserted, 0);
+        let _ = std::fs::remove_dir_all(temp);
     }
 
     #[test]
@@ -966,7 +1009,8 @@ mod tests {
         use std::io;
 
         let database = Database::open_in_memory().unwrap();
-        let config_path = std::env::temp_dir().join("diddo-onboard-before-cutoff.toml");
+        let temp = temp_dir_onboard("before-cutoff");
+        let config_path = temp.join("config.toml");
         let config = config::AppConfig::default();
 
         let mut lines: VecDeque<String> = VecDeque::from(["2026-01-01".to_string()]);
@@ -995,6 +1039,7 @@ mod tests {
 
         assert_eq!(outcome.scanned, 0);
         assert_eq!(outcome.inserted, 0);
+        let _ = std::fs::remove_dir_all(temp);
     }
 
     #[test]
@@ -1003,7 +1048,8 @@ mod tests {
         use std::io;
 
         let database = Database::open_in_memory().unwrap();
-        let config_path = std::env::temp_dir().join("diddo-onboard-import.toml");
+        let temp = temp_dir_onboard("import");
+        let config_path = temp.join("config.toml");
         let mut config = config::AppConfig::default();
         config.onboarding.save_selected_identities = false;
 
@@ -1047,5 +1093,6 @@ mod tests {
         assert_eq!(outcome.matched, 2);
         assert_eq!(outcome.inserted, 2);
         assert_eq!(outcome.skipped_duplicates, 0);
+        let _ = std::fs::remove_dir_all(temp);
     }
 }
