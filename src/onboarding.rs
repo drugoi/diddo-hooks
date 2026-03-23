@@ -8,7 +8,7 @@ use std::path::Path;
 
 use chrono::{DateTime, NaiveDate, Utc};
 
-use crate::config;
+use crate::config::{self, IdentityAlias};
 use crate::db::{Commit, Database};
 
 /// Commit metadata scanned from `git log` before conversion to [`Commit`].
@@ -24,6 +24,13 @@ pub struct ScannedCommit {
 /// Author identity the user selected for import (email preferred; name when email is absent on the commit).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IdentityCandidate {
+    pub name: Option<String>,
+    pub email: Option<String>,
+}
+
+/// Current repository identity from `git config user.name` / `user.email`.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct GitIdentity {
     pub name: Option<String>,
     pub email: Option<String>,
 }
@@ -146,6 +153,93 @@ fn cmp_opt_str(a: &Option<String>, b: &Option<String>) -> std::cmp::Ordering {
     }
 }
 
+/// Preselect identities for import: current git user, saved config aliases, and detected authors that match anchor emails.
+/// When the scan contains any email-backed author, name-only detected identities are not auto-selected (user must confirm).
+pub fn build_preselected_identities(
+    current: &GitIdentity,
+    saved_aliases: &[IdentityAlias],
+    detected: &[IdentityCandidate],
+) -> Vec<IdentityCandidate> {
+    use std::collections::HashSet;
+
+    fn push_unique(
+        out: &mut Vec<IdentityCandidate>,
+        seen: &mut HashSet<(Option<String>, Option<String>)>,
+        id: IdentityCandidate,
+    ) {
+        let key = (id.email.clone(), id.name.clone());
+        if seen.insert(key) {
+            out.push(id);
+        }
+    }
+
+    let mut seen: HashSet<(Option<String>, Option<String>)> = HashSet::new();
+    let mut out = Vec::new();
+
+    if let Some(ref e) = current.email {
+        let e = e.trim();
+        if !e.is_empty() {
+            push_unique(
+                &mut out,
+                &mut seen,
+                IdentityCandidate {
+                    name: current
+                        .name
+                        .as_ref()
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty()),
+                    email: Some(e.to_string()),
+                },
+            );
+        }
+    }
+
+    for a in saved_aliases {
+        let email = a
+            .email
+            .as_ref()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let name = a
+            .name
+            .as_ref()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        if email.is_none() && name.is_none() {
+            continue;
+        }
+        push_unique(&mut out, &mut seen, IdentityCandidate { name, email });
+    }
+
+    let anchor_emails: HashSet<String> = out
+        .iter()
+        .filter_map(|i| i.email.as_ref().map(|e| e.to_ascii_lowercase()))
+        .collect();
+
+    let detected_has_email = detected.iter().any(|d| d.email.is_some());
+
+    for d in detected {
+        if let Some(ref de) = d.email {
+            if anchor_emails
+                .iter()
+                .any(|a| a.eq_ignore_ascii_case(de))
+            {
+                push_unique(&mut out, &mut seen, d.clone());
+            }
+        } else if !detected_has_email
+            && let (Some(cn), Some(dn)) = (
+                current.name.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()),
+                d.name.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()),
+            )
+            && cn == dn
+        {
+            push_unique(&mut out, &mut seen, d.clone());
+        }
+    }
+
+    out
+}
+
 /// Keep commits on or after `cutoff` (local date vs UTC timestamps) whose author matches `selected`.
 pub fn filter_importable_commits(
     commits: &[ScannedCommit],
@@ -231,6 +325,7 @@ mod tests {
     use chrono::TimeZone;
 
     use super::*;
+    use crate::config::IdentityAlias;
     use crate::db::Database;
 
     fn sample_commit(
@@ -352,5 +447,54 @@ mod tests {
         assert!(identities
             .iter()
             .any(|i| i.email.as_deref() == Some("me@example.com")));
+    }
+
+    #[test]
+    fn preselects_current_git_email_and_saved_aliases() {
+        let current_identity = GitIdentity {
+            name: Some("Me".to_string()),
+            email: Some("me@example.com".to_string()),
+        };
+        let saved_aliases = vec![IdentityAlias {
+            name: None,
+            email: Some("me@old-company.com".to_string()),
+        }];
+        let detected = vec![IdentityCandidate {
+            name: Some("Other".to_string()),
+            email: Some("other@example.com".to_string()),
+        }];
+
+        let selected = build_preselected_identities(&current_identity, &saved_aliases, &detected);
+
+        assert!(selected
+            .iter()
+            .any(|i| i.email.as_deref() == Some("me@example.com")));
+        assert!(selected
+            .iter()
+            .any(|i| i.email.as_deref() == Some("me@old-company.com")));
+    }
+
+    #[test]
+    fn name_only_matches_are_not_auto_selected_when_email_candidates_exist() {
+        let current_identity = GitIdentity {
+            name: Some("User".to_string()),
+            email: Some("me@example.com".to_string()),
+        };
+        let detected = vec![
+            IdentityCandidate {
+                name: Some("Nikita".to_string()),
+                email: None,
+            },
+            IdentityCandidate {
+                name: Some("Other".to_string()),
+                email: Some("x@y.com".to_string()),
+            },
+        ];
+
+        let selected = build_preselected_identities(&current_identity, &[], &detected);
+
+        assert!(!selected
+            .iter()
+            .any(|i| i.name.as_deref() == Some("Nikita") && i.email.is_none()));
     }
 }
