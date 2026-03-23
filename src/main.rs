@@ -4,6 +4,7 @@ mod db;
 mod hook;
 mod init;
 mod interactive;
+mod onboarding;
 mod paths;
 mod render;
 mod summary_group;
@@ -124,6 +125,8 @@ enum Commands {
     Config,
     /// Show database metadata.
     Metadata,
+    /// Import existing commit history for the current repository (onboarding).
+    Onboard,
     /// Update diddo to the latest release.
     Update(UpdateArgs),
 }
@@ -311,6 +314,7 @@ fn run_cli(cli: ParsedCli) {
         Some(Commands::Hook) => run_hook_command(),
         Some(Commands::Config) => run_config_command(),
         Some(Commands::Metadata) => run_metadata_command(),
+        Some(Commands::Onboard) => run_onboard_command(),
         Some(Commands::Update(args)) => run_update_command(args),
         _ => run_summary_command(cli),
     };
@@ -391,6 +395,14 @@ fn run_metadata_command() -> Result<(), Box<dyn Error>> {
     println!("{}", format_metadata(&database, size_bytes, &hooks_status)?);
 
     Ok(())
+}
+
+fn run_onboard_command() -> Result<(), Box<dyn Error>> {
+    let paths = paths::AppPaths::new()?;
+    let database = db::Database::open(&paths.db_path)?;
+    let config = config::AppConfig::load(&paths.config_path)?;
+
+    onboarding::run(&database, paths.config_path.as_path(), config)
 }
 
 fn run_update_command(args: UpdateArgs) -> Result<(), Box<dyn Error>> {
@@ -481,6 +493,7 @@ fn summary_request_from_cli(cli: ParsedCli) -> Option<(SummarySelection, Summary
             | Commands::Hook
             | Commands::Config
             | Commands::Metadata
+            | Commands::Onboard
             | Commands::Update(_),
         ) => None,
     }
@@ -1308,6 +1321,20 @@ mod tests {
     }
 
     #[test]
+    fn parses_onboard_subcommand() {
+        let cli = parse_cli(["diddo", "onboard"]).unwrap();
+
+        assert_eq!(cli.command, Some(Commands::Onboard));
+    }
+
+    #[test]
+    fn rejects_summary_flags_on_onboard_command() {
+        let error = parse_cli(["diddo", "onboard", "--md"]).unwrap_err();
+
+        assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
+    }
+
+    #[test]
     fn rejects_range_without_from() {
         let error = parse_cli(["diddo", "range"]).unwrap_err();
 
@@ -1396,6 +1423,7 @@ mod tests {
             parse_cli(["diddo", "range", "--from", "2026-03-01"]).unwrap(),
         );
         let init = summary_request_from_cli(parse_cli(["diddo", "init"]).unwrap());
+        let onboard = summary_request_from_cli(parse_cli(["diddo", "onboard"]).unwrap());
 
         assert_eq!(
             today,
@@ -1437,6 +1465,7 @@ mod tests {
             ))
         );
         assert_eq!(init, None);
+        assert_eq!(onboard, None);
     }
 
     #[test]
