@@ -16,6 +16,7 @@ pub struct ScannedCommit {
     pub author_name: String,
     pub author_email: Option<String>,
     pub committed_at: DateTime<Utc>,
+    pub committed_local_date: NaiveDate,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -102,7 +103,7 @@ where
     let repo_name = repo_name_from_path(&repo_path);
 
     let format_arg = format!("--format={}", GIT_LOG_FORMAT);
-    let log_out = run_git(&["log", &format_arg])?;
+    let log_out = run_git(&["log", "-z", &format_arg])?;
     let all_commits = parse_git_log_output(&log_out).map_err(Box::<dyn Error>::from)?;
 
     if all_commits.is_empty() {
@@ -120,7 +121,7 @@ where
 
     let scanned = all_commits
         .iter()
-        .filter(|c| c.committed_at.date_naive() >= cutoff)
+        .filter(|c| c.committed_local_date >= cutoff)
         .count();
 
     if scanned == 0 {
@@ -216,30 +217,29 @@ where
 
 const RANGE_DATE_HINT: &str = "YYYY-MM-DD or DD.MM.YYYY";
 
-pub const GIT_LOG_FORMAT: &str = "%H%x1f%s%x1f%an%x1f%ae%x1f%cI";
+pub const GIT_LOG_FORMAT: &str = "%H%x1f%an%x1f%ae%x1f%cI%x1f%B";
 
 pub fn parse_git_log_output(output: &str) -> Result<Vec<ScannedCommit>, String> {
     let mut commits = Vec::new();
 
-    for line in output.lines() {
-        let line = line.trim();
-        if line.is_empty() {
+    for record in output.split('\0') {
+        let record = record.trim();
+        if record.is_empty() {
             continue;
         }
 
-        let parts: Vec<&str> = line.split('\x1f').collect();
+        let parts: Vec<&str> = record.split('\x1f').collect();
         if parts.len() != 5 {
             return Err(format!(
-                "expected 5 fields per log line, got {}",
+                "expected 5 fields per commit record, got {}",
                 parts.len()
             ));
         }
 
         let hash = parts[0].trim().to_string();
-        let message = parts[1].to_string();
-        let author_name = parts[2].trim().to_string();
+        let author_name = parts[1].trim().to_string();
         let author_email = {
-            let e = parts[3].trim();
+            let e = parts[2].trim();
             if e.is_empty() {
                 None
             } else {
@@ -247,9 +247,11 @@ pub fn parse_git_log_output(output: &str) -> Result<Vec<ScannedCommit>, String> 
             }
         };
 
-        let committed_at = DateTime::parse_from_rfc3339(parts[4].trim())
-            .map_err(|e| e.to_string())?
-            .with_timezone(&Utc);
+        let dt = DateTime::parse_from_rfc3339(parts[3].trim()).map_err(|e| e.to_string())?;
+        let committed_at = dt.with_timezone(&Utc);
+        let committed_local_date = dt.naive_local().date();
+
+        let message = parts[4].to_string();
 
         commits.push(ScannedCommit {
             hash,
@@ -257,6 +259,7 @@ pub fn parse_git_log_output(output: &str) -> Result<Vec<ScannedCommit>, String> 
             author_name,
             author_email,
             committed_at,
+            committed_local_date,
         });
     }
 
@@ -403,7 +406,7 @@ pub fn filter_importable_commits(
 ) -> Vec<ScannedCommit> {
     commits
         .iter()
-        .filter(|c| c.committed_at.date_naive() >= cutoff && identity_matches(c, selected))
+        .filter(|c| c.committed_local_date >= cutoff && identity_matches(c, selected))
         .cloned()
         .collect()
 }
@@ -415,8 +418,8 @@ fn identity_matches(commit: &ScannedCommit, selected: &[IdentityCandidate]) -> b
                 .as_ref()
                 .is_some_and(|se| ce.eq_ignore_ascii_case(se))
         } else {
-            match (&commit.author_name, &id.name) {
-                (cn, Some(sn)) => cn == sn,
+            match (&id.name, &commit.author_name) {
+                (Some(sn), cn) => cn.trim().eq_ignore_ascii_case(sn.trim()),
                 _ => false,
             }
         }
@@ -580,11 +583,13 @@ fn run_git_command(args: &[&str]) -> io::Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use chrono::TimeZone;
+    use chrono::{DateTime, TimeZone, Utc};
 
     use super::*;
     use crate::config::IdentityAlias;
-    use crate::db::Database;
+    use crate::db::{Commit, Database};
+
+    const TEST_FULL_HASH: &str = "abcd1234abcd1234abcd1234abcd1234abcd1234";
 
     fn sample_commit(
         hash: &str,
@@ -599,6 +604,7 @@ mod tests {
             author_name: author_name.to_string(),
             author_email: author_email.map(str::to_string),
             committed_at,
+            committed_local_date: committed_at.date_naive(),
         }
     }
 
@@ -703,7 +709,8 @@ mod tests {
     }
 
     fn sample_log_two_commits() -> &'static str {
-        "abc1234\x1ffirst\x1fAuthor One\x1fme@example.com\x1f2026-01-01T12:00:00+00:00\ndef5678\x1fsecond\x1fAuthor Two\x1fother@example.com\x1f2026-01-02T12:00:00+00:00"
+        "abc1234\x1fAuthor One\x1fme@example.com\x1f2026-01-01T12:00:00+00:00\x1ffirst subject\0\
+         def5678\x1fAuthor Two\x1fother@example.com\x1f2026-01-02T12:00:00+00:00\x1fsecond subject\0"
     }
 
     #[test]
@@ -712,6 +719,7 @@ mod tests {
 
         assert_eq!(commits.len(), 2);
         assert_eq!(commits[0].hash, "abc1234");
+        assert_eq!(commits[0].message, "first subject");
     }
 
     #[test]
@@ -783,7 +791,141 @@ mod tests {
     }
 
     #[test]
-    fn returns_nothing_to_import_when_cutoff_has_no_commits() {
+    fn import_is_deduped_when_commit_already_exists_from_hook_style_row() {
+        let database = Database::open_in_memory().unwrap();
+        let repo_path = "/tmp/repo";
+        let repo_name = "repo";
+        let branch = "main";
+        let msg = "feat: subject\n\nbody";
+        let committed_at = Utc.with_ymd_and_hms(2026, 2, 1, 12, 0, 0).unwrap();
+
+        database
+            .insert_commit(&Commit {
+                id: None,
+                hash: TEST_FULL_HASH.to_string(),
+                message: msg.to_string(),
+                repo_path: repo_path.to_string(),
+                repo_name: repo_name.to_string(),
+                branch: branch.to_string(),
+                files_changed: 2,
+                insertions: 1,
+                deletions: 0,
+                committed_at,
+                author_email: Some("me@example.com".to_string()),
+            })
+            .unwrap();
+
+        let scanned = ScannedCommit {
+            hash: TEST_FULL_HASH.to_string(),
+            message: msg.to_string(),
+            author_name: "Me".to_string(),
+            author_email: Some("me@example.com".to_string()),
+            committed_at,
+            committed_local_date: NaiveDate::from_ymd_opt(2026, 2, 1).unwrap(),
+        };
+
+        let outcome =
+            import_commits(&database, repo_path, repo_name, branch, &[scanned], 1, 1).unwrap();
+
+        assert_eq!(database.commit_count().unwrap(), 1);
+        assert_eq!(outcome.inserted, 0);
+        assert_eq!(outcome.skipped_duplicates, 1);
+    }
+
+    #[test]
+    fn cutoff_uses_commit_local_date_from_git_iso_offset() {
+        let cutoff = NaiveDate::from_ymd_opt(2026, 1, 2).unwrap();
+        let selected = vec![IdentityCandidate {
+            name: None,
+            email: Some("me@example.com".to_string()),
+        }];
+        let dt = DateTime::parse_from_rfc3339("2026-01-02T04:00:00+09:00").unwrap();
+        let committed_at = dt.with_timezone(&Utc);
+        let commits = vec![ScannedCommit {
+            hash: "x".to_string(),
+            message: "m".to_string(),
+            author_name: "Me".to_string(),
+            author_email: Some("me@example.com".to_string()),
+            committed_at,
+            committed_local_date: dt.naive_local().date(),
+        }];
+
+        let imported = filter_importable_commits(&commits, cutoff, &selected);
+
+        assert_eq!(imported.len(), 1);
+    }
+
+    #[test]
+    fn identity_name_match_is_ascii_case_insensitive() {
+        let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+        let selected = vec![IdentityCandidate {
+            name: Some("Me User".to_string()),
+            email: None,
+        }];
+        let commits = vec![ScannedCommit {
+            hash: "x".to_string(),
+            message: "m".to_string(),
+            author_name: "  me user  ".to_string(),
+            author_email: None,
+            committed_at: Utc.with_ymd_and_hms(2026, 1, 5, 12, 0, 0).unwrap(),
+            committed_local_date: NaiveDate::from_ymd_opt(2026, 1, 5).unwrap(),
+        }];
+
+        let imported = filter_importable_commits(&commits, cutoff, &selected);
+
+        assert_eq!(imported.len(), 1);
+    }
+
+    #[test]
+    fn parse_identity_selection_prefers_preselected_when_line_empty() {
+        let candidates = vec![IdentityCandidate {
+            name: None,
+            email: Some("a@b.com".to_string()),
+        }];
+        let preselected = vec![IdentityCandidate {
+            name: Some("X".to_string()),
+            email: Some("x@y.com".to_string()),
+        }];
+
+        let selected = super::parse_identity_selection("", &candidates, &preselected).unwrap();
+
+        assert_eq!(selected, preselected);
+    }
+
+    #[test]
+    fn parse_identity_selection_parses_indices_and_dedupes() {
+        let candidates = vec![
+            IdentityCandidate {
+                name: None,
+                email: Some("a@b.com".to_string()),
+            },
+            IdentityCandidate {
+                name: None,
+                email: Some("c@d.com".to_string()),
+            },
+        ];
+
+        let selected = super::parse_identity_selection("2, 1, 2", &candidates, &[]).unwrap();
+
+        assert_eq!(selected.len(), 2);
+        assert_eq!(selected[0].email.as_deref(), Some("c@d.com"));
+        assert_eq!(selected[1].email.as_deref(), Some("a@b.com"));
+    }
+
+    #[test]
+    fn parse_identity_selection_errors_on_invalid_index() {
+        let candidates = vec![IdentityCandidate {
+            name: None,
+            email: Some("a@b.com".to_string()),
+        }];
+
+        assert!(super::parse_identity_selection("2", &candidates, &[]).is_err());
+        assert!(super::parse_identity_selection("0", &candidates, &[]).is_err());
+        assert!(super::parse_identity_selection("x", &candidates, &[]).is_err());
+    }
+
+    #[test]
+    fn returns_empty_outcome_when_git_log_has_no_commits() {
         use std::collections::VecDeque;
         use std::io;
 
@@ -819,6 +961,43 @@ mod tests {
     }
 
     #[test]
+    fn nothing_to_import_when_no_commits_on_or_after_cutoff() {
+        use std::collections::VecDeque;
+        use std::io;
+
+        let database = Database::open_in_memory().unwrap();
+        let config_path = std::env::temp_dir().join("diddo-onboard-before-cutoff.toml");
+        let config = config::AppConfig::default();
+
+        let mut lines: VecDeque<String> = VecDeque::from(["2026-01-01".to_string()]);
+        let mut read_line = move || Ok(lines.pop_front().map(|s| s + "\n").unwrap_or_default());
+        let mut write_line = |_s: &str| -> io::Result<()> { Ok(()) };
+
+        let log = "h1\x1fMe\x1fme@example.com\x1f2025-12-31T12:00:00+00:00\x1fold\n\0";
+        let mut run_git = move |args: &[&str]| -> io::Result<String> {
+            match args {
+                ["rev-parse", "--show-toplevel"] => Ok("/tmp/repo\n".to_string()),
+                ["rev-parse", "--abbrev-ref", "HEAD"] => Ok("main\n".to_string()),
+                _ if args.first() == Some(&"log") => Ok(log.to_string()),
+                _ => Err(io::Error::other(format!("unexpected git args: {args:?}"))),
+            }
+        };
+
+        let outcome = run_with(
+            &database,
+            &config_path,
+            config,
+            &mut read_line,
+            &mut write_line,
+            &mut run_git,
+        )
+        .unwrap();
+
+        assert_eq!(outcome.scanned, 0);
+        assert_eq!(outcome.inserted, 0);
+    }
+
+    #[test]
     fn onboarding_run_imports_only_user_confirmed_identities() {
         use std::collections::VecDeque;
         use std::io;
@@ -828,18 +1007,21 @@ mod tests {
         let mut config = config::AppConfig::default();
         config.onboarding.save_selected_identities = false;
 
-        let three = concat!(
-            "h1\x1fm1\x1fMe\x1fme@example.com\x1f2026-01-01T12:00:00+00:00\n",
-            "h2\x1fm2\x1fMe\x1fme@example.com\x1f2026-01-02T12:00:00+00:00\n",
-            "h3\x1fm3\x1fOther\x1fother@example.com\x1f2026-01-03T12:00:00+00:00\n",
-        );
+        let log = concat!(
+            "h1\x1fMe\x1fme@example.com\x1f2026-01-01T12:00:00+00:00\x1fm1\n",
+            "\0",
+            "h2\x1fMe\x1fme@example.com\x1f2026-01-02T12:00:00+00:00\x1fm2\n",
+            "\0",
+            "h3\x1fOther\x1fother@example.com\x1f2026-01-03T12:00:00+00:00\x1fm3\n",
+            "\0",
+        )
+        .to_string();
 
         let mut lines: VecDeque<String> =
             VecDeque::from(["2026-01-01".to_string(), "1".to_string()]);
         let mut read_line = move || Ok(lines.pop_front().map(|s| s + "\n").unwrap_or_default());
         let mut write_line = |_s: &str| -> io::Result<()> { Ok(()) };
 
-        let log = three.to_string();
         let mut run_git = move |args: &[&str]| -> io::Result<String> {
             match args {
                 ["rev-parse", "--show-toplevel"] => Ok("/tmp/repo\n".to_string()),

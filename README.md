@@ -114,7 +114,7 @@ diddo onboard
 
 From the repository root, you’ll be prompted for:
 
-- A **cutoff date** (`YYYY-MM-DD` or `DD.MM.YYYY`). Commits **on or after** that calendar day (in each commit’s local date) are considered.
+- A **cutoff date** (`YYYY-MM-DD` or `DD.MM.YYYY`). Included commits are those **on or after** that day in each commit’s `%cI` local calendar (not “UTC day” alone).
 - Which **author identities** to include (numbered list from `git log`; comma-separated indexes, or Enter to accept preselected identities based on your current `git config` and any saved aliases).
 
 Optional identity aliases are stored under `[onboarding]` in your config when you confirm saving them.

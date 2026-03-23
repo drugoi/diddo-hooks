@@ -63,26 +63,30 @@ pub struct AiCliConfig {
 
 impl AppConfig {
     pub fn load(path: &Path) -> io::Result<Self> {
-        let mut config = if path.exists() {
-            let contents = fs::read_to_string(path)?;
-            toml::from_str::<Self>(&contents).map_err(|error| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("failed to parse config file {}: {error}", path.display()),
-                )
-            })?
-        } else {
-            Self::default()
-        };
+        let mut config = Self::load_from_file(path)?;
 
         config.ai.apply_environment_defaults();
         Ok(config)
+    }
+
+    pub fn load_from_file(path: &Path) -> io::Result<Self> {
+        if !path.exists() {
+            return Ok(Self::default());
+        }
+
+        let contents = fs::read_to_string(path)?;
+        toml::from_str::<Self>(&contents).map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("failed to parse config file {}: {error}", path.display()),
+            )
+        })
     }
 }
 
 pub fn save_onboarding_aliases(path: &Path, aliases: &[IdentityAlias]) -> io::Result<()> {
     let mut config = if path.exists() {
-        AppConfig::load(path)?
+        AppConfig::load_from_file(path)?
     } else {
         AppConfig::default()
     };
@@ -614,6 +618,33 @@ email = "drugoi@example.com"
         assert!(written.contains("[onboarding]"));
         assert!(written.contains("[[onboarding.identity_aliases]]"));
 
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn save_onboarding_aliases_does_not_write_env_only_api_key() {
+        let _guard = env_lock().lock().unwrap();
+        let temp = temp_dir("onboarding-save-env-key");
+        let config_path = temp.join("config.toml");
+
+        fs::write(&config_path, "[ai]\nprovider = \"openai\"\n").unwrap();
+        unsafe {
+            std::env::set_var("DIDDO_OPENAI_KEY", "secret-from-env-only");
+        }
+
+        let aliases = vec![IdentityAlias {
+            name: None,
+            email: Some("a@b.com".to_string()),
+        }];
+        save_onboarding_aliases(&config_path, &aliases).unwrap();
+
+        let written = fs::read_to_string(&config_path).unwrap();
+        assert!(!written.contains("secret-from-env-only"));
+        assert!(!written.contains("api_key"));
+
+        unsafe {
+            std::env::remove_var("DIDDO_OPENAI_KEY");
+        }
         fs::remove_dir_all(temp).unwrap();
     }
 
