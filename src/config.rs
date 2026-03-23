@@ -10,7 +10,6 @@ pub struct AppConfig {
     pub onboarding: OnboardingConfig,
 }
 
-/// User preferences for manual repository onboarding (identity aliases, etc.).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct OnboardingConfig {
@@ -81,7 +80,6 @@ impl AppConfig {
     }
 }
 
-/// Persist onboarding identity aliases, preserving other config sections when possible.
 pub fn save_onboarding_aliases(path: &Path, aliases: &[IdentityAlias]) -> io::Result<()> {
     let mut config = if path.exists() {
         AppConfig::load(path)?

@@ -125,7 +125,7 @@ enum Commands {
     Config,
     /// Show database metadata.
     Metadata,
-    /// Import existing commit history for the current repository (onboarding).
+    /// Import existing commit history for the current repository.
     Onboard,
     /// Update diddo to the latest release.
     Update(UpdateArgs),
@@ -1333,10 +1333,7 @@ mod tests {
     fn help_output_mentions_onboard_command() {
         let help = HelpCli::command().render_long_help().to_string();
 
-        assert!(
-            help.contains("onboard"),
-            "expected help to list onboard subcommand:\n{help}"
-        );
+        assert!(help.contains("onboard"));
     }
 
     #[test]

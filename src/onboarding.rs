@@ -9,7 +9,6 @@ use crate::config::{self, IdentityAlias};
 use crate::db::{Commit, Database};
 use crate::parse_supported_date;
 
-/// Commit metadata scanned from `git log` before conversion to [`Commit`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScannedCommit {
     pub hash: String,
@@ -19,21 +18,18 @@ pub struct ScannedCommit {
     pub committed_at: DateTime<Utc>,
 }
 
-/// Author identity the user selected for import (email preferred; name when email is absent on the commit).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IdentityCandidate {
     pub name: Option<String>,
     pub email: Option<String>,
 }
 
-/// Current repository identity from `git config user.name` / `user.email`.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct GitIdentity {
     pub name: Option<String>,
     pub email: Option<String>,
 }
 
-/// Counts for one import run.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ImportOutcome {
     pub scanned: usize,
@@ -42,7 +38,6 @@ pub struct ImportOutcome {
     pub skipped_duplicates: usize,
 }
 
-/// Run onboarding interactively (stdin/stdout, real `git` in the current directory).
 pub fn run(
     database: &Database,
     config_path: &Path,
@@ -81,7 +76,6 @@ pub fn run(
     Ok(())
 }
 
-/// Injected I/O and git runner for tests and embedding.
 pub fn run_with<R, W, G>(
     database: &Database,
     config_path: &Path,
@@ -109,7 +103,7 @@ where
 
     let format_arg = format!("--format={}", GIT_LOG_FORMAT);
     let log_out = run_git(&["log", &format_arg])?;
-    let all_commits = parse_git_log_output(&log_out).map_err(|e| -> Box<dyn Error> { e.into() })?;
+    let all_commits = parse_git_log_output(&log_out).map_err(Box::<dyn Error>::from)?;
 
     if all_commits.is_empty() {
         write_line("No commits found in this repository — nothing to import.\n")?;
@@ -122,7 +116,7 @@ where
     ))?;
     let cutoff_line = read_line()?;
     let cutoff = parse_supported_date(cutoff_line.trim())
-        .map_err(|e| -> Box<dyn Error> { format!("invalid cutoff date: {e}").into() })?;
+        .map_err(|e| Box::<dyn Error>::from(format!("invalid cutoff date: {e}")))?;
 
     let scanned = all_commits
         .iter()
@@ -222,10 +216,8 @@ where
 
 const RANGE_DATE_HINT: &str = "YYYY-MM-DD or DD.MM.YYYY";
 
-/// `git log` line format: hash, subject, author name, author email, commit date (RFC3339), separated by ASCII unit separator.
 pub const GIT_LOG_FORMAT: &str = "%H%x1f%s%x1f%an%x1f%ae%x1f%cI";
 
-/// Parse output from `git log` using [`GIT_LOG_FORMAT`] (one record per line).
 pub fn parse_git_log_output(output: &str) -> Result<Vec<ScannedCommit>, String> {
     let mut commits = Vec::new();
 
@@ -271,7 +263,6 @@ pub fn parse_git_log_output(output: &str) -> Result<Vec<ScannedCommit>, String> 
     Ok(commits)
 }
 
-/// Unique author identities from scanned commits, sorted with email-backed rows first, then by email and name.
 pub fn detect_identities(commits: &[ScannedCommit]) -> Vec<IdentityCandidate> {
     use std::collections::HashSet;
 
@@ -319,8 +310,6 @@ fn cmp_opt_str(a: &Option<String>, b: &Option<String>) -> std::cmp::Ordering {
     }
 }
 
-/// Preselect identities for import: current git user, saved config aliases, and detected authors that match anchor emails.
-/// When the scan contains any email-backed author, name-only detected identities are not auto-selected (user must confirm).
 pub fn build_preselected_identities(
     current: &GitIdentity,
     saved_aliases: &[IdentityAlias],
@@ -407,7 +396,6 @@ pub fn build_preselected_identities(
     out
 }
 
-/// Keep commits on or after `cutoff` (local date vs UTC timestamps) whose author matches `selected`.
 pub fn filter_importable_commits(
     commits: &[ScannedCommit],
     cutoff: NaiveDate,
@@ -456,7 +444,6 @@ pub fn to_db_commit(
     }
 }
 
-/// Insert scanned commits into the database. Duplicate `(repo_path, hash)` rows are updated in place, not double-counted.
 pub fn import_commits(
     database: &Database,
     repo_path: &str,
