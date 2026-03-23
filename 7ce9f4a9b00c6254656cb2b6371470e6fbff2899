@@ -1,0 +1,26 @@
+src/db.rs
+  10236c963b71d188 122-156
+src/onboarding.rs
+  10236c963b71d188 192,200,454,457-459,515-522,524-528,591,593,599-611,854-873,974-975,1003,1012-1013,1042,1051-1052,1096
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.15",
+  "base_commit_sha": "7ce9f4a9b00c6254656cb2b6371470e6fbff2899",
+  "prompts": {
+    "10236c963b71d188": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "3c42a562-ceaa-4cd5-bcbd-4885e6cf109b",
+        "model": "default"
+      },
+      "human_author": "Nikita Bayev <nikita@bayev.kz>",
+      "messages": [],
+      "total_additions": 131,
+      "total_deletions": 49,
+      "accepted_lines": 100,
+      "overriden_lines": 0,
+      "messages_url": "https://usegitai.com/cas/7af55273f490a4b2b5f333d1582489dea826f91bb5a1f202f8173412b14aca36"
+    }
+  }
+}
