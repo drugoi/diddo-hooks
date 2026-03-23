@@ -46,6 +46,106 @@ pub fn run(
     Ok(())
 }
 
+/// `git log` line format: hash, subject, author name, author email, commit date (RFC3339), separated by ASCII unit separator.
+#[allow(dead_code)] // Used when wiring `git log`; must stay aligned with [`parse_git_log_output`].
+pub const GIT_LOG_FORMAT: &str = "%H%x1f%s%x1f%an%x1f%ae%x1f%cI";
+
+/// Parse output from `git log` using [`GIT_LOG_FORMAT`] (one record per line).
+pub fn parse_git_log_output(output: &str) -> Result<Vec<ScannedCommit>, String> {
+    let mut commits = Vec::new();
+
+    for line in output.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        let parts: Vec<&str> = line.split('\x1f').collect();
+        if parts.len() != 5 {
+            return Err(format!(
+                "expected 5 fields per log line, got {}",
+                parts.len()
+            ));
+        }
+
+        let hash = parts[0].trim().to_string();
+        let message = parts[1].to_string();
+        let author_name = parts[2].trim().to_string();
+        let author_email = {
+            let e = parts[3].trim();
+            if e.is_empty() {
+                None
+            } else {
+                Some(e.to_string())
+            }
+        };
+
+        let committed_at = DateTime::parse_from_rfc3339(parts[4].trim())
+            .map_err(|e| e.to_string())?
+            .with_timezone(&Utc);
+
+        commits.push(ScannedCommit {
+            hash,
+            message,
+            author_name,
+            author_email,
+            committed_at,
+        });
+    }
+
+    Ok(commits)
+}
+
+/// Unique author identities from scanned commits, sorted with email-backed rows first, then by email and name.
+pub fn detect_identities(commits: &[ScannedCommit]) -> Vec<IdentityCandidate> {
+    use std::collections::HashSet;
+
+    let mut seen: HashSet<(Option<String>, Option<String>)> = HashSet::new();
+    let mut out = Vec::new();
+
+    for c in commits {
+        let email = c
+            .author_email
+            .as_ref()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let name = if c.author_name.trim().is_empty() {
+            None
+        } else {
+            Some(c.author_name.trim().to_string())
+        };
+
+        if email.is_none() && name.is_none() {
+            continue;
+        }
+
+        let key = (email.clone(), name.clone());
+        if seen.insert(key) {
+            out.push(IdentityCandidate { name, email });
+        }
+    }
+
+    out.sort_by(|a, b| match (&a.email, &b.email) {
+        (Some(ea), Some(eb)) => ea
+            .cmp(eb)
+            .then_with(|| cmp_opt_str(&a.name, &b.name)),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => cmp_opt_str(&a.name, &b.name),
+    });
+
+    out
+}
+
+fn cmp_opt_str(a: &Option<String>, b: &Option<String>) -> std::cmp::Ordering {
+    match (a, b) {
+        (Some(x), Some(y)) => x.cmp(y),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
+    }
+}
+
 /// Keep commits on or after `cutoff` (local date vs UTC timestamps) whose author matches `selected`.
 pub fn filter_importable_commits(
     commits: &[ScannedCommit],
@@ -229,5 +329,28 @@ mod tests {
         import_commits(&database, repo_path, repo_name, branch, &filtered).unwrap();
 
         assert_eq!(database.commit_count().unwrap(), 1);
+    }
+
+    fn sample_log_two_commits() -> &'static str {
+        "abc1234\x1ffirst\x1fAuthor One\x1fme@example.com\x1f2026-01-01T12:00:00+00:00\ndef5678\x1fsecond\x1fAuthor Two\x1fother@example.com\x1f2026-01-02T12:00:00+00:00"
+    }
+
+    #[test]
+    fn parse_git_log_output_builds_scanned_commits() {
+        let commits = parse_git_log_output(sample_log_two_commits()).unwrap();
+
+        assert_eq!(commits.len(), 2);
+        assert_eq!(commits[0].hash, "abc1234");
+    }
+
+    #[test]
+    fn detected_identities_include_unique_name_email_pairs() {
+        let commits = parse_git_log_output(sample_log_two_commits()).unwrap();
+        let identities = detect_identities(&commits);
+
+        assert_eq!(identities.len(), 2);
+        assert!(identities
+            .iter()
+            .any(|i| i.email.as_deref() == Some("me@example.com")));
     }
 }
