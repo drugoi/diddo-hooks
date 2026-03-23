@@ -1,15 +1,40 @@
 use std::{fs, io, path::Path};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct AppConfig {
     pub ai: AiConfig,
     pub update: UpdateConfig,
+    pub onboarding: OnboardingConfig,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+/// User preferences for manual repository onboarding (identity aliases, etc.).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct OnboardingConfig {
+    pub save_selected_identities: bool,
+    pub identity_aliases: Vec<IdentityAlias>,
+}
+
+impl Default for OnboardingConfig {
+    fn default() -> Self {
+        Self {
+            save_selected_identities: true,
+            identity_aliases: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct IdentityAlias {
+    pub name: Option<String>,
+    pub email: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct UpdateConfig {
     pub auto_check: bool,
@@ -21,7 +46,7 @@ impl Default for UpdateConfig {
     }
 }
 
-#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct AiConfig {
     pub provider: Option<String>,
@@ -31,7 +56,7 @@ pub struct AiConfig {
     pub cli: AiCliConfig,
 }
 
-#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct AiCliConfig {
     pub prefer: Option<String>,
@@ -54,6 +79,43 @@ impl AppConfig {
         config.ai.apply_environment_defaults();
         Ok(config)
     }
+}
+
+/// Persist onboarding identity aliases, preserving other config sections when possible.
+#[allow(dead_code)] // Used by tests; `onboarding` will call this when saving aliases after import.
+pub fn save_onboarding_aliases(path: &Path, aliases: &[IdentityAlias]) -> io::Result<()> {
+    let mut config = if path.exists() {
+        AppConfig::load(path)?
+    } else {
+        AppConfig::default()
+    };
+
+    config.onboarding.identity_aliases = aliases.iter().cloned().map(normalize_identity_alias).collect();
+
+    let contents = toml::to_string_pretty(&config).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("failed to serialize config: {error}"),
+        )
+    })?;
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, contents)
+}
+
+fn normalize_identity_alias(alias: IdentityAlias) -> IdentityAlias {
+    IdentityAlias {
+        name: normalize_optional_string(alias.name),
+        email: normalize_optional_string(alias.email),
+    }
+}
+
+fn normalize_optional_string(value: Option<String>) -> Option<String> {
+    value
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 #[allow(dead_code)]
@@ -150,7 +212,7 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    use super::AppConfig;
+    use super::{AppConfig, IdentityAlias, save_onboarding_aliases};
 
     #[test]
     fn returns_default_config_when_file_does_not_exist() {
@@ -494,6 +556,62 @@ prompt_instructions = "  \n\t "
         let config = AppConfig::load(&config_path).unwrap();
 
         assert!(!config.update.auto_check);
+
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn parses_onboarding_identity_aliases_from_toml() {
+        let temp = temp_dir("onboarding-parse");
+        let config_path = temp.join("config.toml");
+
+        fs::write(
+            &config_path,
+            r#"[onboarding]
+save_selected_identities = true
+
+[[onboarding.identity_aliases]]
+name = "Nikita Bayev"
+email = "nikita@old-company.com"
+
+[[onboarding.identity_aliases]]
+email = "drugoi@example.com"
+"#,
+        )
+        .unwrap();
+
+        let config = AppConfig::load(&config_path).unwrap();
+
+        assert_eq!(config.onboarding.identity_aliases.len(), 2);
+        assert_eq!(
+            config.onboarding.identity_aliases[0].email.as_deref(),
+            Some("nikita@old-company.com")
+        );
+
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn save_onboarding_aliases_writes_expected_toml() {
+        let temp = temp_dir("onboarding-save");
+        let config_path = temp.join("config.toml");
+
+        let aliases = [
+            IdentityAlias {
+                name: Some("Nikita Bayev".to_string()),
+                email: Some("nikita@old-company.com".to_string()),
+            },
+            IdentityAlias {
+                name: None,
+                email: Some("drugoi@example.com".to_string()),
+            },
+        ];
+
+        save_onboarding_aliases(&config_path, &aliases).unwrap();
+
+        let written = fs::read_to_string(&config_path).unwrap();
+        assert!(written.contains("[onboarding]"));
+        assert!(written.contains("[[onboarding.identity_aliases]]"));
 
         fs::remove_dir_all(temp).unwrap();
     }
