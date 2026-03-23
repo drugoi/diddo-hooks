@@ -1,15 +1,13 @@
-#![cfg_attr(
-    not(test),
-    allow(dead_code)
-)] // Core helpers are covered by unit tests; `run()` wires them in later tasks.
-
 use std::error::Error;
+use std::io::{self, BufRead, Write};
 use std::path::Path;
+use std::process::Command;
 
 use chrono::{DateTime, NaiveDate, Utc};
 
 use crate::config::{self, IdentityAlias};
 use crate::db::{Commit, Database};
+use crate::parse_supported_date;
 
 /// Commit metadata scanned from `git log` before conversion to [`Commit`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,17 +42,187 @@ pub struct ImportOutcome {
     pub skipped_duplicates: usize,
 }
 
-/// Full onboarding flow (interactive UI, git scan) is implemented incrementally.
+/// Run onboarding interactively (stdin/stdout, real `git` in the current directory).
 pub fn run(
-    _database: &Database,
-    _config_path: &Path,
-    _config: config::AppConfig,
+    database: &Database,
+    config_path: &Path,
+    config: config::AppConfig,
 ) -> Result<(), Box<dyn Error>> {
+    let stdin = io::stdin();
+    let mut stdin_lock = stdin.lock();
+    let mut stdout = io::stdout();
+
+    let outcome = run_with(
+        database,
+        config_path,
+        config,
+        &mut || {
+            let mut line = String::new();
+            stdin_lock.read_line(&mut line)?;
+            Ok(line)
+        },
+        &mut |s: &str| {
+            stdout.write_all(s.as_bytes())?;
+            stdout.flush()?;
+            Ok(())
+        },
+        run_git_command,
+    )?;
+
+    writeln!(
+        io::stdout(),
+        "Onboarding finished: {} commit(s) in date range, {} matched selected identities, {} inserted, {} skipped as duplicates.",
+        outcome.scanned,
+        outcome.matched,
+        outcome.inserted,
+        outcome.skipped_duplicates
+    )?;
+
     Ok(())
 }
 
+/// Injected I/O and git runner for tests and embedding.
+pub fn run_with<R, W, G>(
+    database: &Database,
+    config_path: &Path,
+    config: config::AppConfig,
+    read_line: &mut R,
+    write_line: &mut W,
+    mut run_git: G,
+) -> Result<ImportOutcome, Box<dyn Error>>
+where
+    R: FnMut() -> io::Result<String>,
+    W: FnMut(&str) -> io::Result<()>,
+    G: FnMut(&[&str]) -> io::Result<String>,
+{
+    let repo_path = trim_git_output(run_git(&["rev-parse", "--show-toplevel"])?);
+    if repo_path.is_empty() {
+        return Err("not a git repository (git rev-parse --show-toplevel failed)".into());
+    }
+
+    let branch = normalize_branch_name(&trim_git_output(run_git(&[
+        "rev-parse",
+        "--abbrev-ref",
+        "HEAD",
+    ])?));
+    let repo_name = repo_name_from_path(&repo_path);
+
+    let format_arg = format!("--format={}", GIT_LOG_FORMAT);
+    let log_out = run_git(&["log", &format_arg])?;
+    let all_commits = parse_git_log_output(&log_out).map_err(|e| -> Box<dyn Error> { e.into() })?;
+
+    if all_commits.is_empty() {
+        write_line("No commits found in this repository — nothing to import.\n")?;
+        return Ok(ImportOutcome::default());
+    }
+
+    write_line(&format!(
+        "Import commits on or after which date? ({}) ",
+        RANGE_DATE_HINT
+    ))?;
+    let cutoff_line = read_line()?;
+    let cutoff = parse_supported_date(cutoff_line.trim())
+        .map_err(|e| -> Box<dyn Error> { format!("invalid cutoff date: {e}").into() })?;
+
+    let scanned = all_commits
+        .iter()
+        .filter(|c| c.committed_at.date_naive() >= cutoff)
+        .count();
+
+    if scanned == 0 {
+        write_line(&format!(
+            "No commits on or after {} — nothing to import.\n",
+            cutoff
+        ))?;
+        return Ok(ImportOutcome {
+            scanned: 0,
+            matched: 0,
+            inserted: 0,
+            skipped_duplicates: 0,
+        });
+    }
+
+    let detected = detect_identities(&all_commits);
+    let current = read_git_identity(&mut run_git)?;
+    let preselected =
+        build_preselected_identities(&current, &config.onboarding.identity_aliases, &detected);
+
+    if detected.is_empty() {
+        write_line("No author identities found in history — nothing to import.\n")?;
+        return Ok(ImportOutcome {
+            scanned,
+            matched: 0,
+            inserted: 0,
+            skipped_duplicates: 0,
+        });
+    }
+
+    write_line("\nAuthor identities (from git history):\n")?;
+    for (i, id) in detected.iter().enumerate() {
+        let label = format_identity_line(id);
+        let mark = if preselected.iter().any(|p| identity_same(p, id)) {
+            " (preselected)"
+        } else {
+            ""
+        };
+        write_line(&format!("{}. {}{}\n", i + 1, label, mark))?;
+    }
+    write_line(
+        "\nEnter numbers to import, separated by commas (e.g. 1,3). Press Enter to use preselected only.\n> ",
+    )?;
+
+    let selection_line = read_line()?;
+    let selected = parse_identity_selection(selection_line.trim(), &detected, &preselected)?;
+
+    let filtered = filter_importable_commits(&all_commits, cutoff, &selected);
+    let matched = filtered.len();
+
+    let import_outcome = import_commits(
+        database, &repo_path, &repo_name, &branch, &filtered, scanned, matched,
+    )?;
+
+    if config.onboarding.save_selected_identities {
+        let had_before = config.onboarding.identity_aliases.clone();
+
+        let selected_aliases: Vec<IdentityAlias> = selected
+            .iter()
+            .map(|id| IdentityAlias {
+                name: id.name.clone(),
+                email: id.email.clone(),
+            })
+            .collect();
+
+        let has_new_alias = selected_aliases.iter().any(|a| {
+            !had_before
+                .iter()
+                .any(|h| h.name == a.name && h.email == a.email)
+        });
+
+        if has_new_alias {
+            write_line("\nSave selected identities to config for next time? [y/N] ")?;
+            let yn = read_line()?;
+            if matches!(yn.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+                let mut merged = had_before;
+                for a in selected_aliases {
+                    if !merged
+                        .iter()
+                        .any(|h| h.name == a.name && h.email == a.email)
+                    {
+                        merged.push(a);
+                    }
+                }
+                config::save_onboarding_aliases(config_path, &merged)?;
+                write_line("Saved identity aliases to config.\n")?;
+            }
+        }
+    }
+
+    Ok(import_outcome)
+}
+
+const RANGE_DATE_HINT: &str = "YYYY-MM-DD or DD.MM.YYYY";
+
 /// `git log` line format: hash, subject, author name, author email, commit date (RFC3339), separated by ASCII unit separator.
-#[allow(dead_code)] // Used when wiring `git log`; must stay aligned with [`parse_git_log_output`].
 pub const GIT_LOG_FORMAT: &str = "%H%x1f%s%x1f%an%x1f%ae%x1f%cI";
 
 /// Parse output from `git log` using [`GIT_LOG_FORMAT`] (one record per line).
@@ -133,9 +301,7 @@ pub fn detect_identities(commits: &[ScannedCommit]) -> Vec<IdentityCandidate> {
     }
 
     out.sort_by(|a, b| match (&a.email, &b.email) {
-        (Some(ea), Some(eb)) => ea
-            .cmp(eb)
-            .then_with(|| cmp_opt_str(&a.name, &b.name)),
+        (Some(ea), Some(eb)) => ea.cmp(eb).then_with(|| cmp_opt_str(&a.name, &b.name)),
         (Some(_), None) => std::cmp::Ordering::Less,
         (None, Some(_)) => std::cmp::Ordering::Greater,
         (None, None) => cmp_opt_str(&a.name, &b.name),
@@ -220,15 +386,16 @@ pub fn build_preselected_identities(
 
     for d in detected {
         if let Some(ref de) = d.email {
-            if anchor_emails
-                .iter()
-                .any(|a| a.eq_ignore_ascii_case(de))
-            {
+            if anchor_emails.iter().any(|a| a.eq_ignore_ascii_case(de)) {
                 push_unique(&mut out, &mut seen, d.clone());
             }
         } else if !detected_has_email
             && let (Some(cn), Some(dn)) = (
-                current.name.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()),
+                current
+                    .name
+                    .as_ref()
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty()),
                 d.name.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()),
             )
             && cn == dn
@@ -248,9 +415,7 @@ pub fn filter_importable_commits(
 ) -> Vec<ScannedCommit> {
     commits
         .iter()
-        .filter(|c| {
-            c.committed_at.date_naive() >= cutoff && identity_matches(c, selected)
-        })
+        .filter(|c| c.committed_at.date_naive() >= cutoff && identity_matches(c, selected))
         .cloned()
         .collect()
 }
@@ -298,9 +463,9 @@ pub fn import_commits(
     repo_name: &str,
     branch: &str,
     commits: &[ScannedCommit],
+    scanned_total: usize,
+    matched_total: usize,
 ) -> Result<ImportOutcome, rusqlite::Error> {
-    let scanned = commits.len();
-    let matched = commits.len();
     let count_before = database.commit_count()?;
 
     for c in commits {
@@ -310,14 +475,120 @@ pub fn import_commits(
 
     let count_after = database.commit_count()?;
     let inserted = (count_after - count_before) as usize;
-    let skipped_duplicates = matched.saturating_sub(inserted);
+    let skipped_duplicates = commits.len().saturating_sub(inserted);
 
     Ok(ImportOutcome {
-        scanned,
-        matched,
+        scanned: scanned_total,
+        matched: matched_total,
         inserted,
         skipped_duplicates,
     })
+}
+
+fn trim_git_output(output: String) -> String {
+    output.trim_end_matches(['\r', '\n']).trim().to_string()
+}
+
+fn repo_name_from_path(repo_path: &str) -> String {
+    Path::new(repo_path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or("unknown")
+        .to_string()
+}
+
+fn normalize_branch_name(branch: &str) -> String {
+    if branch == "HEAD" {
+        return "detached".to_string();
+    }
+    branch.to_string()
+}
+
+fn read_git_identity<F>(run_git: &mut F) -> io::Result<GitIdentity>
+where
+    F: FnMut(&[&str]) -> io::Result<String>,
+{
+    let email = run_git(&["config", "user.email"])
+        .ok()
+        .map(trim_git_output)
+        .filter(|s| !s.is_empty());
+    let name = run_git(&["config", "user.name"])
+        .ok()
+        .map(trim_git_output)
+        .filter(|s| !s.is_empty());
+    Ok(GitIdentity { name, email })
+}
+
+fn format_identity_line(id: &IdentityCandidate) -> String {
+    match (&id.name, &id.email) {
+        (Some(n), Some(e)) => format!("{n} <{e}>"),
+        (None, Some(e)) => e.clone(),
+        (Some(n), None) => format!("{n} (no email)"),
+        (None, None) => "(unknown)".to_string(),
+    }
+}
+
+fn identity_same(a: &IdentityCandidate, b: &IdentityCandidate) -> bool {
+    a.name == b.name && a.email == b.email
+}
+
+fn parse_identity_selection(
+    line: &str,
+    candidates: &[IdentityCandidate],
+    preselected: &[IdentityCandidate],
+) -> Result<Vec<IdentityCandidate>, String> {
+    if line.is_empty() {
+        return Ok(preselected.to_vec());
+    }
+
+    use std::collections::HashSet;
+
+    let mut seen_idx: HashSet<usize> = HashSet::new();
+    let mut out = Vec::new();
+
+    for part in line.split(',') {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        let n: usize = part
+            .parse()
+            .map_err(|_| format!("invalid selection index: {part}"))?;
+        let idx = n
+            .checked_sub(1)
+            .ok_or_else(|| "selection indices must be >= 1".to_string())?;
+        let id = candidates
+            .get(idx)
+            .ok_or_else(|| format!("no identity at index {n}"))?;
+        if seen_idx.insert(idx) {
+            out.push(id.clone());
+        }
+    }
+
+    if out.is_empty() {
+        return Err("no identities selected".into());
+    }
+
+    Ok(out)
+}
+
+fn run_git_command(args: &[&str]) -> io::Result<String> {
+    let output = Command::new("git").args(args).output()?;
+
+    if output.status.success() {
+        return Ok(String::from_utf8_lossy(&output.stdout).into_owned());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let command = format!("git {}", args.join(" "));
+    let message = if stderr.is_empty() {
+        format!("{command} failed")
+    } else {
+        format!("{command} failed: {stderr}")
+    };
+
+    Err(io::Error::other(message))
 }
 
 #[cfg(test)]
@@ -420,8 +691,26 @@ mod tests {
             Utc.with_ymd_and_hms(2026, 2, 1, 12, 0, 0).unwrap(),
         )];
 
-        import_commits(&database, repo_path, repo_name, branch, &filtered).unwrap();
-        import_commits(&database, repo_path, repo_name, branch, &filtered).unwrap();
+        import_commits(
+            &database,
+            repo_path,
+            repo_name,
+            branch,
+            &filtered,
+            filtered.len(),
+            filtered.len(),
+        )
+        .unwrap();
+        import_commits(
+            &database,
+            repo_path,
+            repo_name,
+            branch,
+            &filtered,
+            filtered.len(),
+            filtered.len(),
+        )
+        .unwrap();
 
         assert_eq!(database.commit_count().unwrap(), 1);
     }
@@ -444,9 +733,11 @@ mod tests {
         let identities = detect_identities(&commits);
 
         assert_eq!(identities.len(), 2);
-        assert!(identities
-            .iter()
-            .any(|i| i.email.as_deref() == Some("me@example.com")));
+        assert!(
+            identities
+                .iter()
+                .any(|i| i.email.as_deref() == Some("me@example.com"))
+        );
     }
 
     #[test]
@@ -466,12 +757,16 @@ mod tests {
 
         let selected = build_preselected_identities(&current_identity, &saved_aliases, &detected);
 
-        assert!(selected
-            .iter()
-            .any(|i| i.email.as_deref() == Some("me@example.com")));
-        assert!(selected
-            .iter()
-            .any(|i| i.email.as_deref() == Some("me@old-company.com")));
+        assert!(
+            selected
+                .iter()
+                .any(|i| i.email.as_deref() == Some("me@example.com"))
+        );
+        assert!(
+            selected
+                .iter()
+                .any(|i| i.email.as_deref() == Some("me@old-company.com"))
+        );
     }
 
     #[test]
@@ -493,8 +788,95 @@ mod tests {
 
         let selected = build_preselected_identities(&current_identity, &[], &detected);
 
-        assert!(!selected
-            .iter()
-            .any(|i| i.name.as_deref() == Some("Nikita") && i.email.is_none()));
+        assert!(
+            !selected
+                .iter()
+                .any(|i| i.name.as_deref() == Some("Nikita") && i.email.is_none())
+        );
+    }
+
+    #[test]
+    fn returns_nothing_to_import_when_cutoff_has_no_commits() {
+        use std::collections::VecDeque;
+        use std::io;
+
+        let database = Database::open_in_memory().unwrap();
+        let config_path = std::env::temp_dir().join("diddo-onboard-empty.toml");
+        let config = config::AppConfig::default();
+
+        let mut lines: VecDeque<String> = VecDeque::new();
+        let mut read_line = move || Ok(lines.pop_front().map(|s| s + "\n").unwrap_or_default());
+        let mut write_line = |_s: &str| -> io::Result<()> { Ok(()) };
+
+        let mut run_git = |args: &[&str]| -> io::Result<String> {
+            match args {
+                ["rev-parse", "--show-toplevel"] => Ok("/tmp/repo\n".to_string()),
+                ["rev-parse", "--abbrev-ref", "HEAD"] => Ok("main\n".to_string()),
+                _ if args.first() == Some(&"log") => Ok(String::new()),
+                _ => Err(io::Error::other(format!("unexpected git args: {args:?}"))),
+            }
+        };
+
+        let outcome = run_with(
+            &database,
+            &config_path,
+            config,
+            &mut read_line,
+            &mut write_line,
+            &mut run_git,
+        )
+        .unwrap();
+
+        assert_eq!(outcome.scanned, 0);
+        assert_eq!(outcome.inserted, 0);
+    }
+
+    #[test]
+    fn onboarding_run_imports_only_user_confirmed_identities() {
+        use std::collections::VecDeque;
+        use std::io;
+
+        let database = Database::open_in_memory().unwrap();
+        let config_path = std::env::temp_dir().join("diddo-onboard-import.toml");
+        let mut config = config::AppConfig::default();
+        config.onboarding.save_selected_identities = false;
+
+        let three = concat!(
+            "h1\x1fm1\x1fMe\x1fme@example.com\x1f2026-01-01T12:00:00+00:00\n",
+            "h2\x1fm2\x1fMe\x1fme@example.com\x1f2026-01-02T12:00:00+00:00\n",
+            "h3\x1fm3\x1fOther\x1fother@example.com\x1f2026-01-03T12:00:00+00:00\n",
+        );
+
+        let mut lines: VecDeque<String> =
+            VecDeque::from(["2026-01-01".to_string(), "1".to_string()]);
+        let mut read_line = move || Ok(lines.pop_front().map(|s| s + "\n").unwrap_or_default());
+        let mut write_line = |_s: &str| -> io::Result<()> { Ok(()) };
+
+        let log = three.to_string();
+        let mut run_git = move |args: &[&str]| -> io::Result<String> {
+            match args {
+                ["rev-parse", "--show-toplevel"] => Ok("/tmp/repo\n".to_string()),
+                ["rev-parse", "--abbrev-ref", "HEAD"] => Ok("main\n".to_string()),
+                ["config", "user.email"] => Ok("me@example.com\n".to_string()),
+                ["config", "user.name"] => Ok("Me\n".to_string()),
+                _ if args.first() == Some(&"log") => Ok(log.clone()),
+                _ => Err(io::Error::other(format!("unexpected git args: {args:?}"))),
+            }
+        };
+
+        let outcome = run_with(
+            &database,
+            &config_path,
+            config,
+            &mut read_line,
+            &mut write_line,
+            &mut run_git,
+        )
+        .unwrap();
+
+        assert_eq!(outcome.scanned, 3);
+        assert_eq!(outcome.matched, 2);
+        assert_eq!(outcome.inserted, 2);
+        assert_eq!(outcome.skipped_duplicates, 0);
     }
 }

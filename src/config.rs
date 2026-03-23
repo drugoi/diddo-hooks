@@ -82,7 +82,6 @@ impl AppConfig {
 }
 
 /// Persist onboarding identity aliases, preserving other config sections when possible.
-#[allow(dead_code)] // Used by tests; `onboarding` will call this when saving aliases after import.
 pub fn save_onboarding_aliases(path: &Path, aliases: &[IdentityAlias]) -> io::Result<()> {
     let mut config = if path.exists() {
         AppConfig::load(path)?
@@ -90,7 +89,11 @@ pub fn save_onboarding_aliases(path: &Path, aliases: &[IdentityAlias]) -> io::Re
         AppConfig::default()
     };
 
-    config.onboarding.identity_aliases = aliases.iter().cloned().map(normalize_identity_alias).collect();
+    config.onboarding.identity_aliases = aliases
+        .iter()
+        .cloned()
+        .map(normalize_identity_alias)
+        .collect();
 
     let contents = toml::to_string_pretty(&config).map_err(|error| {
         io::Error::new(

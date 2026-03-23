@@ -972,13 +972,15 @@ mod tests {
     use std::path::PathBuf;
 
     use chrono::{NaiveDate, TimeZone, Utc};
+    use clap::CommandFactory;
 
     use super::{
-        AiSummaryAttempt, Commands, OutputFormat, ParsedCli, SummaryArgs, SummarySelection,
-        build_summary_data, compute_cache_key, format_commit_time, format_config_paths,
-        format_file_size, format_metadata, output_format, parse_cli, parse_interactive_selection,
-        parse_supported_date, range_date_format_error, render_empty_summary, render_summary_output,
-        resolve_summary_window, should_try_ai_summary, summary_request_from_cli, try_ai_summary,
+        AiSummaryAttempt, Commands, HelpCli, OutputFormat, ParsedCli, SummaryArgs,
+        SummarySelection, build_summary_data, compute_cache_key, format_commit_time,
+        format_config_paths, format_file_size, format_metadata, output_format, parse_cli,
+        parse_interactive_selection, parse_supported_date, range_date_format_error,
+        render_empty_summary, render_summary_output, resolve_summary_window, should_try_ai_summary,
+        summary_request_from_cli, try_ai_summary,
     };
     use crate::{
         ai::{AiError, AiProvider},
@@ -1325,6 +1327,16 @@ mod tests {
         let cli = parse_cli(["diddo", "onboard"]).unwrap();
 
         assert_eq!(cli.command, Some(Commands::Onboard));
+    }
+
+    #[test]
+    fn help_output_mentions_onboard_command() {
+        let help = HelpCli::command().render_long_help().to_string();
+
+        assert!(
+            help.contains("onboard"),
+            "expected help to list onboard subcommand:\n{help}"
+        );
     }
 
     #[test]
