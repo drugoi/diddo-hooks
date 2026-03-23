@@ -1,0 +1,28 @@
+.github/workflows/test.yml
+  5aac9ecf78eed745 17-22,25-27
+rust-toolchain.toml
+  5aac9ecf78eed745 1-2
+.github/workflows/release.yml
+  5aac9ecf78eed745 38-43,47,88-93,97,137-143,146-147
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.15",
+  "base_commit_sha": "36e03b1f4408adb78165d3ca92965ac85b0d8d7a",
+  "prompts": {
+    "5aac9ecf78eed745": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "db50cfc7-eff8-45ac-b06c-08339108d5b4",
+        "model": "default"
+      },
+      "human_author": "Nikita Bayev <nikita@bayev.kz>",
+      "messages": [],
+      "total_additions": 34,
+      "total_deletions": 0,
+      "accepted_lines": 34,
+      "overriden_lines": 0,
+      "messages_url": "https://usegitai.com/cas/96f57159b7351f1e37788ac3c1c9073e9deff4eaba194445a735ef4b7fadc780"
+    }
+  }
+}
