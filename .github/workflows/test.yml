@@ -14,8 +14,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
+      - name: Read Rust toolchain channel
+        id: rust
+        run: |
+          channel=$(grep -E '^channel\s*=' rust-toolchain.toml | head -1 | sed -E 's/^channel\s*=\s*"([^"]+)".*/\1/')
+          echo "channel=${channel}" >> $GITHUB_OUTPUT
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ steps.rust.outputs.channel }}
+          components: rustfmt, clippy
 
       - name: Run tests
         run: cargo test

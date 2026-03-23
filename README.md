@@ -102,7 +102,22 @@ Also added diddo post-commit to this repo's local hooks (.husky) so commits are 
 
 If a `post-commit` already exists in that directory, it is backed up as `post-commit.diddo-prev` and the new script chains to it.
 
-`diddo` only records commits made after setup. It does not backfill old git history into the database.
+`diddo` only records commits made after setup by default; it does not backfill old git history into the database automatically.
+
+### Importing older history (`diddo onboard`)
+
+To import existing commits from the **current repository** into the database (for example after you start using `diddo` on an existing project), run:
+
+```bash
+diddo onboard
+```
+
+From the repository root, you’ll be prompted for:
+
+- A **cutoff date** (`YYYY-MM-DD` or `DD.MM.YYYY`). Included commits are those **on or after** that day in each commit’s `%cI` local calendar (not “UTC day” alone).
+- Which **author identities** to include (numbered list from `git log`; comma-separated indexes, or Enter to accept preselected identities based on your current `git config` and any saved aliases).
+
+Optional identity aliases are stored under `[onboarding]` in your config when you confirm saving them.
 
 To see where `diddo` stores its config, database, and managed hooks on your machine:
 

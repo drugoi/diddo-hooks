@@ -23,7 +23,7 @@ where
     F: FnMut(&[&str]) -> io::Result<String>,
     G: FnMut() -> io::Result<String>,
 {
-    let hash = trim_git_output(run_git(&["rev-parse", "--short", "HEAD"])?);
+    let hash = trim_git_output(run_git(&["rev-parse", "HEAD"])?);
     let message = trim_git_output(run_git(&["log", "-1", "--format=%B"])?);
     let committed_at =
         parse_git_timestamp(&trim_git_output(run_git(&["log", "-1", "--format=%cI"])?))?;
@@ -146,6 +146,8 @@ mod tests {
     use super::{build_commit, normalize_branch_name, parse_git_timestamp, run_with};
     use crate::db::Database;
 
+    const TEST_HEAD_HASH: &str = "abcd1234abcd1234abcd1234abcd1234abcd1234";
+
     #[test]
     fn stores_author_email_from_git_config() {
         let database = Database::open_in_memory().unwrap();
@@ -154,7 +156,7 @@ mod tests {
         run_with(
             &database,
             |args| match args {
-                ["rev-parse", "--short", "HEAD"] => Ok("abc1234\n".to_string()),
+                ["rev-parse", "HEAD"] => Ok(format!("{TEST_HEAD_HASH}\n")),
                 ["log", "-1", "--format=%B"] => Ok("feat: add hook storage\n".to_string()),
                 ["log", "-1", "--format=%cI"] => Ok("2026-03-10T12:00:00+00:00\n".to_string()),
                 ["rev-parse", "--show-toplevel"] => {
@@ -187,7 +189,7 @@ mod tests {
         run_with(
             &database,
             |args| match args {
-                ["rev-parse", "--short", "HEAD"] => Ok("abc1234\n".to_string()),
+                ["rev-parse", "HEAD"] => Ok(format!("{TEST_HEAD_HASH}\n")),
                 ["log", "-1", "--format=%B"] => Ok("feat: add hook storage\n".to_string()),
                 ["log", "-1", "--format=%cI"] => Ok("2026-03-10T12:00:00+00:00\n".to_string()),
                 ["rev-parse", "--show-toplevel"] => {
@@ -206,7 +208,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(commits.len(), 1);
-        assert_eq!(commits[0].hash, "abc1234");
+        assert_eq!(commits[0].hash, TEST_HEAD_HASH);
         assert_eq!(commits[0].message, "feat: add hook storage");
         assert_eq!(commits[0].repo_path, "/Users/example/projects/diddo");
         assert_eq!(commits[0].repo_name, "diddo");
@@ -224,7 +226,7 @@ mod tests {
     #[test]
     fn author_email_is_none_when_config_fails() {
         let mut run_git = |args: &[&str]| match args {
-            ["rev-parse", "--short", "HEAD"] => Ok("abc1234\n".to_string()),
+            ["rev-parse", "HEAD"] => Ok(format!("{TEST_HEAD_HASH}\n")),
             ["log", "-1", "--format=%B"] => Ok("feat: add hook storage\n".to_string()),
             ["log", "-1", "--format=%cI"] => Ok("2026-03-10T12:00:00+00:00\n".to_string()),
             ["rev-parse", "--show-toplevel"] => Ok("/Users/example/projects/diddo\n".to_string()),
@@ -243,7 +245,7 @@ mod tests {
     #[test]
     fn defaults_diff_stats_to_zero_when_extraction_fails() {
         let mut run_git = |args: &[&str]| match args {
-            ["rev-parse", "--short", "HEAD"] => Ok("abc1234\n".to_string()),
+            ["rev-parse", "HEAD"] => Ok(format!("{TEST_HEAD_HASH}\n")),
             ["log", "-1", "--format=%B"] => Ok("feat: add hook storage\n".to_string()),
             ["log", "-1", "--format=%cI"] => Ok("2026-03-10T12:00:00+00:00\n".to_string()),
             ["rev-parse", "--show-toplevel"] => Ok("/Users/example/projects/diddo\n".to_string()),
@@ -269,7 +271,7 @@ mod tests {
     #[test]
     fn uses_git_commit_timestamp_for_committed_at() {
         let mut run_git = |args: &[&str]| match args {
-            ["rev-parse", "--short", "HEAD"] => Ok("abc1234\n".to_string()),
+            ["rev-parse", "HEAD"] => Ok(format!("{TEST_HEAD_HASH}\n")),
             ["log", "-1", "--format=%B"] => Ok("feat: add hook storage\n".to_string()),
             ["log", "-1", "--format=%cI"] => Ok("2026-03-09T23:45:00-05:00\n".to_string()),
             ["rev-parse", "--show-toplevel"] => Ok("/Users/example/projects/diddo\n".to_string()),
