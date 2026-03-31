@@ -9,7 +9,7 @@ mod render;
 mod summary_group;
 mod update;
 
-use chrono::{DateTime, Datelike, Duration, Local, NaiveDate, Utc};
+use chrono::{DateTime, Duration, Local, NaiveDate, Utc};
 use clap::{ArgGroup, Args, Parser, Subcommand};
 use indicatif::{ProgressBar, ProgressStyle};
 use sha2::{Digest, Sha256};
@@ -106,9 +106,9 @@ enum Commands {
     Today(SummaryArgs),
     /// Show yesterday's summary.
     Yesterday(SummaryArgs),
-    /// Show this week's summary.
+    /// Show summary for the last 7 days.
     Week(SummaryArgs),
-    /// Show this month's summary.
+    /// Show summary for the last 30 days.
     Month(SummaryArgs),
     /// Show a summary for a custom date range.
     Range(RangeArgs),
@@ -509,12 +509,12 @@ fn resolve_summary_window(
             }
         }
         SummarySelection::Week => {
-            let week_start = today - Duration::days(today.weekday().num_days_from_monday().into());
+            let week_start = today - Duration::days(6);
             SummaryWindow {
                 from: week_start,
                 to: today,
-                date_label: format!("{week_start} to {today} (week)"),
-                ai_period: "this week".to_string(),
+                date_label: format!("{week_start} to {today} (last 7 days)"),
+                ai_period: "the last 7 days".to_string(),
                 exact_bounds: None,
             }
         }
@@ -530,14 +530,12 @@ fn resolve_summary_window(
             }
         }
         SummarySelection::Month => {
-            let month_start = today.with_day(1).ok_or_else(|| {
-                std::io::Error::other("failed to resolve the start of the current month")
-            })?;
+            let month_start = today - Duration::days(29);
             SummaryWindow {
                 from: month_start,
                 to: today,
-                date_label: format!("{month_start} to {today} (month)"),
-                ai_period: "this month".to_string(),
+                date_label: format!("{month_start} to {today} (last 30 days)"),
+                ai_period: "the last 30 days".to_string(),
                 exact_bounds: None,
             }
         }
@@ -1440,27 +1438,27 @@ mod tests {
     }
 
     #[test]
-    fn resolves_week_window_from_monday_through_today() {
+    fn resolves_week_window_as_last_7_days() {
         let today = NaiveDate::from_ymd_opt(2026, 3, 12).unwrap();
 
         let window = resolve_summary_window(SummarySelection::Week, today).unwrap();
 
-        assert_eq!(window.from, NaiveDate::from_ymd_opt(2026, 3, 9).unwrap());
+        assert_eq!(window.from, NaiveDate::from_ymd_opt(2026, 3, 6).unwrap());
         assert_eq!(window.to, today);
-        assert_eq!(window.date_label, "2026-03-09 to 2026-03-12 (week)");
-        assert_eq!(window.ai_period, "this week");
+        assert_eq!(window.date_label, "2026-03-06 to 2026-03-12 (last 7 days)");
+        assert_eq!(window.ai_period, "the last 7 days");
     }
 
     #[test]
-    fn resolves_month_window_from_first_day_through_today() {
+    fn resolves_month_window_as_last_30_days() {
         let today = NaiveDate::from_ymd_opt(2026, 3, 12).unwrap();
 
         let window = resolve_summary_window(SummarySelection::Month, today).unwrap();
 
-        assert_eq!(window.from, NaiveDate::from_ymd_opt(2026, 3, 1).unwrap());
+        assert_eq!(window.from, NaiveDate::from_ymd_opt(2026, 2, 11).unwrap());
         assert_eq!(window.to, today);
-        assert_eq!(window.date_label, "2026-03-01 to 2026-03-12 (month)");
-        assert_eq!(window.ai_period, "this month");
+        assert_eq!(window.date_label, "2026-02-11 to 2026-03-12 (last 30 days)");
+        assert_eq!(window.ai_period, "the last 30 days");
     }
 
     #[test]
@@ -1679,8 +1677,10 @@ mod tests {
     #[test]
     fn renders_useful_empty_period_messages_for_all_output_formats() {
         let terminal = render_empty_summary("2026-03-10 (today)", SummaryArgs::default());
-        let month_terminal =
-            render_empty_summary("2026-03-01 to 2026-03-12 (month)", SummaryArgs::default());
+        let month_terminal = render_empty_summary(
+            "2026-02-10 to 2026-03-12 (last 30 days)",
+            SummaryArgs::default(),
+        );
         let range_terminal =
             render_empty_summary("2026-03-01 to 2026-03-11", SummaryArgs::default());
         let markdown = render_empty_summary(
@@ -1713,7 +1713,7 @@ mod tests {
         assert_eq!(terminal, "No commits recorded for 2026-03-10 (today).");
         assert_eq!(
             month_terminal,
-            "No commits recorded for 2026-03-01 to 2026-03-12 (month)."
+            "No commits recorded for 2026-02-10 to 2026-03-12 (last 30 days)."
         );
         assert_eq!(
             range_terminal,

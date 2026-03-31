@@ -44,12 +44,12 @@ const MENU_ITEMS: &[MenuItem] = &[
     MenuItem {
         key: "week",
         label: "Week",
-        description: "Show this week's summary",
+        description: "Show summary for the last 7 days",
     },
     MenuItem {
         key: "month",
         label: "Month",
-        description: "Show this month's summary",
+        description: "Show summary for the last 30 days",
     },
     MenuItem {
         key: "range",
