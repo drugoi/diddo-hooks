@@ -614,8 +614,10 @@ mod tests {
 
     #[test]
     fn range_form_submit_without_to_omits_to_flag() {
-        let mut form = RangeFormState::default();
-        form.from = "2026-03-01".to_string();
+        let mut form = RangeFormState {
+            from: "2026-03-01".to_string(),
+            ..RangeFormState::default()
+        };
 
         let command = submit_range_form(&mut form).unwrap();
 
@@ -625,8 +627,10 @@ mod tests {
 
     #[test]
     fn range_form_submit_with_dotted_from_normalizes_to_iso_command() {
-        let mut form = RangeFormState::default();
-        form.from = "01.03.2026".to_string();
+        let mut form = RangeFormState {
+            from: "01.03.2026".to_string(),
+            ..RangeFormState::default()
+        };
 
         let command = submit_range_form(&mut form).unwrap();
 

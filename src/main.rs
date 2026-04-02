@@ -387,8 +387,12 @@ fn run_metadata_command() -> Result<(), Box<dyn Error>> {
     let database = db::Database::open(&paths.db_path)?;
     let size_bytes = std::fs::metadata(&paths.db_path)?.len();
     let hooks_status = init::hooks_status(&paths)?;
+    let app_config = config::AppConfig::load(&paths.config_path)?;
 
-    println!("{}", format_metadata(&database, size_bytes, &hooks_status)?);
+    println!(
+        "{}",
+        format_metadata(&database, size_bytes, &hooks_status, &app_config)?
+    );
 
     Ok(())
 }
@@ -401,6 +405,7 @@ fn format_metadata(
     database: &db::Database,
     size_bytes: u64,
     hooks_status: &init::HooksStatus,
+    app_config: &config::AppConfig,
 ) -> Result<String, Box<dyn Error>> {
     let count = database.commit_count()?;
     let oldest = match database.oldest_commit_date()? {
@@ -429,10 +434,59 @@ fn format_metadata(
         init::LocalHookStatus::NotInRepo => "not in a git repository".to_string(),
     };
 
+    let dash = "-";
+    let provider = app_config
+        .ai
+        .resolved_provider()
+        .as_deref()
+        .unwrap_or(dash)
+        .to_string();
+    let model = app_config
+        .ai
+        .resolved_model()
+        .as_deref()
+        .unwrap_or(dash)
+        .to_string();
+    let api_key = match app_config.ai.resolved_api_key() {
+        Some(key) => mask_api_key(&key),
+        None => dash.to_string(),
+    };
+    let cli_prefer = app_config
+        .ai
+        .normalized_cli_preference()
+        .as_deref()
+        .unwrap_or(dash)
+        .to_string();
+    let (prompt_label, prompt_text) = match app_config.ai.resolved_prompt_instructions() {
+        Some(custom) => ("custom", custom.to_string()),
+        None => ("default", ai::DEFAULT_PROMPT_INSTRUCTIONS.to_string()),
+    };
+    let auto_update = app_config.update.auto_check;
+
     Ok(format!(
-        "Database size:   {}\nTotal commits:   {count}\nOldest commit:   {oldest}\n\nGlobal hooks:    {global_hooks}\nLocal hooks:     {local_hooks}",
+        "Database size:   {}\n\
+         Total commits:   {count}\n\
+         Oldest commit:   {oldest}\n\
+         \n\
+         Global hooks:    {global_hooks}\n\
+         Local hooks:     {local_hooks}\n\
+         \n\
+         AI provider:     {provider}\n\
+         AI model:        {model}\n\
+         AI API key:      {api_key}\n\
+         CLI preference:  {cli_prefer}\n\
+         Prompt ({prompt_label}):\n{prompt_text}\n\n\
+         Auto-update:     {auto_update}",
         format_file_size(size_bytes)
     ))
+}
+
+fn mask_api_key(key: &str) -> String {
+    if key.len() <= 8 {
+        "***".to_string()
+    } else {
+        format!("{}…{}", &key[..4], &key[key.len() - 4..])
+    }
 }
 
 fn run_summary_command(cli: ParsedCli) -> Result<(), Box<dyn Error>> {
@@ -961,9 +1015,10 @@ mod tests {
     use super::{
         AiSummaryAttempt, Commands, OutputFormat, ParsedCli, SummaryArgs, SummarySelection,
         build_summary_data, compute_cache_key, format_commit_time, format_config_paths,
-        format_file_size, format_metadata, output_format, parse_cli, parse_interactive_selection,
-        parse_supported_date, range_date_format_error, render_empty_summary, render_summary_output,
-        resolve_summary_window, should_try_ai_summary, summary_request_from_cli, try_ai_summary,
+        format_file_size, format_metadata, mask_api_key, output_format, parse_cli,
+        parse_interactive_selection, parse_supported_date, range_date_format_error,
+        render_empty_summary, render_summary_output, resolve_summary_window, should_try_ai_summary,
+        summary_request_from_cli, try_ai_summary,
     };
     use crate::{
         ai::{AiError, AiProvider},
@@ -1991,7 +2046,7 @@ mod tests {
         let database = crate::db::Database::open_in_memory().unwrap();
         let status = test_hooks_status();
 
-        let output = format_metadata(&database, 0, &status).unwrap();
+        let output = format_metadata(&database, 0, &status, &AppConfig::default()).unwrap();
 
         assert!(output.contains("Database size:   0 bytes"));
         assert!(output.contains("Total commits:   0"));
@@ -2018,7 +2073,8 @@ mod tests {
             .insert_commit(&sample_commit_at("bbb2222", "repo-b", "/tmp/repo-b", later))
             .unwrap();
 
-        let output = format_metadata(&database, 50 * 1024 * 1024, &status).unwrap();
+        let output =
+            format_metadata(&database, 50 * 1024 * 1024, &status, &AppConfig::default()).unwrap();
 
         assert!(output.contains("Database size:   50.00 MB"));
         assert!(output.contains("Total commits:   2"));
@@ -2037,7 +2093,7 @@ mod tests {
             local: crate::init::LocalHookStatus::NotSet,
         };
 
-        let output = format_metadata(&database, 0, &status).unwrap();
+        let output = format_metadata(&database, 0, &status, &AppConfig::default()).unwrap();
 
         assert!(output.contains("Global hooks:    ~/.config/diddo/hooks (ok)"));
         assert!(output.contains("Local hooks:     not set"));
@@ -2051,10 +2107,62 @@ mod tests {
             local: crate::init::LocalHookStatus::NoDiddoHook(".husky".to_string()),
         };
 
-        let output = format_metadata(&database, 0, &status).unwrap();
+        let output = format_metadata(&database, 0, &status, &AppConfig::default()).unwrap();
 
         assert!(output.contains("Global hooks:    not set (run 'diddo init')"));
         assert!(output.contains("Local hooks:     .husky (missing diddo hook"));
+    }
+
+    #[test]
+    fn metadata_shows_config_settings() {
+        let database = crate::db::Database::open_in_memory().unwrap();
+        let status = test_hooks_status();
+        let config = AppConfig {
+            ai: AiConfig {
+                provider: Some("anthropic".to_string()),
+                api_key: Some("sk-ant-1234567890abcdef".to_string()),
+                model: Some("claude-sonnet-4-6".to_string()),
+                prompt_instructions: Some("Summarize in German.".to_string()),
+                cli: AiCliConfig {
+                    prefer: Some("api".to_string()),
+                },
+            },
+            update: crate::config::UpdateConfig { auto_check: false },
+        };
+
+        let output = format_metadata(&database, 0, &status, &config).unwrap();
+
+        assert!(output.contains("AI provider:     anthropic"));
+        assert!(output.contains("AI model:        claude-sonnet-4-6"));
+        assert!(output.contains("AI API key:      sk-a…cdef"));
+        assert!(output.contains("CLI preference:  api"));
+        assert!(output.contains("Prompt (custom):"));
+        assert!(output.contains("Summarize in German."));
+        assert!(output.contains("Auto-update:     false"));
+    }
+
+    #[test]
+    fn metadata_shows_defaults_when_config_is_empty() {
+        let database = crate::db::Database::open_in_memory().unwrap();
+        let status = test_hooks_status();
+
+        let output = format_metadata(&database, 0, &status, &AppConfig::default()).unwrap();
+
+        assert!(output.contains("AI provider:     -"));
+        assert!(output.contains("AI model:        -"));
+        assert!(output.contains("AI API key:      -"));
+        assert!(output.contains("CLI preference:  -"));
+        assert!(output.contains("Prompt (default):"));
+        assert!(output.contains("Using only the commit data provided"));
+        assert!(output.contains("Auto-update:     true"));
+    }
+
+    #[test]
+    fn mask_api_key_hides_middle_of_long_keys() {
+        assert_eq!(mask_api_key("sk-ant-1234567890abcdef"), "sk-a…cdef");
+        assert_eq!(mask_api_key("short"), "***");
+        assert_eq!(mask_api_key("12345678"), "***");
+        assert_eq!(mask_api_key("123456789"), "1234…6789");
     }
 
     #[test]
