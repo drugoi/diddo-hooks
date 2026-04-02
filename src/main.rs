@@ -435,13 +435,28 @@ fn format_metadata(
     };
 
     let dash = "-";
-    let provider = app_config.ai.resolved_provider().as_deref().unwrap_or(dash).to_string();
-    let model = app_config.ai.resolved_model().as_deref().unwrap_or(dash).to_string();
+    let provider = app_config
+        .ai
+        .resolved_provider()
+        .as_deref()
+        .unwrap_or(dash)
+        .to_string();
+    let model = app_config
+        .ai
+        .resolved_model()
+        .as_deref()
+        .unwrap_or(dash)
+        .to_string();
     let api_key = match app_config.ai.resolved_api_key() {
         Some(key) => mask_api_key(&key),
         None => dash.to_string(),
     };
-    let cli_prefer = app_config.ai.normalized_cli_preference().as_deref().unwrap_or(dash).to_string();
+    let cli_prefer = app_config
+        .ai
+        .normalized_cli_preference()
+        .as_deref()
+        .unwrap_or(dash)
+        .to_string();
     let (prompt_label, prompt_text) = match app_config.ai.resolved_prompt_instructions() {
         Some(custom) => ("custom", custom.to_string()),
         None => ("default", ai::DEFAULT_PROMPT_INSTRUCTIONS.to_string()),
@@ -1002,8 +1017,8 @@ mod tests {
         build_summary_data, compute_cache_key, format_commit_time, format_config_paths,
         format_file_size, format_metadata, mask_api_key, output_format, parse_cli,
         parse_interactive_selection, parse_supported_date, range_date_format_error,
-        render_empty_summary, render_summary_output, resolve_summary_window,
-        should_try_ai_summary, summary_request_from_cli, try_ai_summary,
+        render_empty_summary, render_summary_output, resolve_summary_window, should_try_ai_summary,
+        summary_request_from_cli, try_ai_summary,
     };
     use crate::{
         ai::{AiError, AiProvider},
@@ -2058,7 +2073,8 @@ mod tests {
             .insert_commit(&sample_commit_at("bbb2222", "repo-b", "/tmp/repo-b", later))
             .unwrap();
 
-        let output = format_metadata(&database, 50 * 1024 * 1024, &status, &AppConfig::default()).unwrap();
+        let output =
+            format_metadata(&database, 50 * 1024 * 1024, &status, &AppConfig::default()).unwrap();
 
         assert!(output.contains("Database size:   50.00 MB"));
         assert!(output.contains("Total commits:   2"));
