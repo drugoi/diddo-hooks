@@ -8,6 +8,39 @@ use cli_provider::{CliProvider, CliTool};
 
 use crate::{config::AiConfig, db::Commit};
 
+pub const DEFAULT_PROMPT_INSTRUCTIONS: &str = "\
+Using only the commit data provided, produce a concise repository-based summary of changes.\n\
+\n\
+Format:\n\
+\n\
+Repository: <repository_name>\n\
+1. <short description of change or feature>\n\
+2. <short description of fix or improvement>\n\
+\n\
+Repository: <another_repository>\n\
+1. <short description of change or feature>\n\
+2. <short description of fix or improvement>\n\
+\n\
+Examples:\n\
+\n\
+Repository: diddo\n\
+1. Added AI-powered daily summaries for recorded commits.\n\
+2. Improved the global hook installation flow.\n\
+\n\
+Repository: api-service\n\
+1. Fixed token refresh handling for expired sessions.\n\
+2. Refactored request validation for clearer error responses.\n\
+\n\
+Guidelines:\n\
+- Group commits by repository.\n\
+- Convert commit messages into short, clear descriptions of what changed.\n\
+- Combine similar commits into a single bullet when possible.\n\
+- Focus on meaningful work (features, fixes, refactors, improvements).\n\
+- Ignore trivial commits (formatting, typos, merge commits) unless important.\n\
+- Keep each bullet to one short sentence.\n\
+\n\
+Use only the commit data below.";
+
 #[allow(dead_code)]
 pub trait AiProvider {
     fn summarize(&self, commits: &[Commit], period: &str) -> Result<String>;
@@ -256,29 +289,7 @@ pub fn build_prompt(
 
     let mut prompt = format!(
         "You are summarizing git activity for {period}.\n\n\
-         Using only the commit data provided, produce a concise repository-based summary of changes.\n\n\
-         Format:\n\n\
-         Repository: <repository_name>\n\
-         1. <short description of change or feature>\n\
-         2. <short description of fix or improvement>\n\n\
-         Repository: <another_repository>\n\
-         1. <short description of change or feature>\n\
-         2. <short description of fix or improvement>\n\n\
-         Examples:\n\n\
-         Repository: diddo\n\
-         1. Added AI-powered daily summaries for recorded commits.\n\
-         2. Improved the global hook installation flow.\n\n\
-         Repository: api-service\n\
-         1. Fixed token refresh handling for expired sessions.\n\
-         2. Refactored request validation for clearer error responses.\n\n\
-         Guidelines:\n\
-         - Group commits by repository.\n\
-         - Convert commit messages into short, clear descriptions of what changed.\n\
-         - Combine similar commits into a single bullet when possible.\n\
-         - Focus on meaningful work (features, fixes, refactors, improvements).\n\
-         - Ignore trivial commits (formatting, typos, merge commits) unless important.\n\
-         - Keep each bullet to one short sentence.\n\n\
-         Use only the commit data below.\n\n\
+         {DEFAULT_PROMPT_INSTRUCTIONS}\n\n\
          Period: {period}\n\
          Commit count: {}\n\n\
          Commits:\n",
