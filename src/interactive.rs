@@ -1,8 +1,11 @@
 use std::io::{self, Write};
+use std::path::Path;
 use std::sync::Arc;
 
+use crate::activity_report::{self, ActivityReport, PERIOD_OPTIONS};
+use crate::db::Database;
 use crate::{RANGE_DATE_FORMATS, parse_supported_date, range_date_format_error};
-use chrono::NaiveDate;
+use chrono::{Local, NaiveDate};
 use crossterm::{
     cursor,
     event::{self, Event, KeyCode, KeyEventKind},
@@ -57,6 +60,11 @@ const MENU_ITEMS: &[MenuItem] = &[
         description: "Choose a custom date range",
     },
     MenuItem {
+        key: "activity",
+        label: "Activity Report",
+        description: "Heatmap and statistics",
+    },
+    MenuItem {
         key: "config",
         label: "Config",
         description: "Show config and paths",
@@ -88,10 +96,20 @@ enum Action {
     None,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 enum UiState {
-    Menu { selected: usize },
+    Menu {
+        selected: usize,
+    },
     RangeForm(RangeFormState),
+    ActivityPeriodSelect {
+        selected: usize,
+    },
+    ActivityReportView {
+        report: ActivityReport,
+        report_text: String,
+        scroll: usize,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -150,7 +168,7 @@ fn restore_terminal(stdout: &mut impl Write) {
     let _ = terminal::disable_raw_mode();
 }
 
-pub fn run() -> Result<Option<String>, Box<dyn std::error::Error>> {
+pub fn run(db_path: Option<&Path>) -> Result<Option<String>, Box<dyn std::error::Error>> {
     terminal::enable_raw_mode()?;
 
     let prev_hook = std::panic::take_hook();
@@ -161,7 +179,7 @@ pub fn run() -> Result<Option<String>, Box<dyn std::error::Error>> {
         (*prev_hook_rc)(info);
     }));
 
-    let result = run_inner();
+    let result = run_inner(db_path);
 
     let _ = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| (*prev_hook_restore)(info)));
@@ -172,7 +190,7 @@ pub fn run() -> Result<Option<String>, Box<dyn std::error::Error>> {
     result
 }
 
-fn run_inner() -> Result<Option<String>, Box<dyn std::error::Error>> {
+fn run_inner(db_path: Option<&Path>) -> Result<Option<String>, Box<dyn std::error::Error>> {
     let mut stdout = io::stdout();
     let mut state = UiState::Menu { selected: 0 };
 
@@ -236,6 +254,93 @@ fn run_inner() -> Result<Option<String>, Box<dyn std::error::Error>> {
                         draw(&mut stdout, &state)?;
                     }
                 },
+                UiState::ActivityPeriodSelect { selected } => {
+                    let action = action_from_key(key_event.code, PERIOD_OPTIONS.len());
+                    match action {
+                        Action::Select => {
+                            let (months, _) = PERIOD_OPTIONS[*selected];
+                            match build_activity_report(db_path, months) {
+                                Ok(report) => {
+                                    let report_text = activity_report::render_terminal(&report);
+                                    state = UiState::ActivityReportView {
+                                        report,
+                                        report_text,
+                                        scroll: 0,
+                                    };
+                                }
+                                Err(error) => {
+                                    state = UiState::ActivityReportView {
+                                        report: empty_report(months),
+                                        report_text: format!("Error: {error}"),
+                                        scroll: 0,
+                                    };
+                                }
+                            }
+                            draw(&mut stdout, &state)?;
+                        }
+                        Action::Quit => {
+                            state = UiState::Menu {
+                                selected: activity_menu_index(),
+                            };
+                            draw(&mut stdout, &state)?;
+                        }
+                        _ => {
+                            *selected = apply_action(action, *selected, PERIOD_OPTIONS.len());
+                            draw(&mut stdout, &state)?;
+                        }
+                    }
+                }
+                UiState::ActivityReportView {
+                    report,
+                    report_text,
+                    scroll,
+                    ..
+                } => match key_event.code {
+                    KeyCode::Esc | KeyCode::Char('q') => {
+                        state = UiState::Menu {
+                            selected: activity_menu_index(),
+                        };
+                        draw(&mut stdout, &state)?;
+                    }
+                    KeyCode::Char('e') | KeyCode::Char('E') => {
+                        let msg = match activity_report::export_markdown(report) {
+                            Ok(path) => format!("Exported to {}", path.display()),
+                            Err(error) => format!("Export failed: {error}"),
+                        };
+                        // Show brief confirmation before returning to menu
+                        execute!(
+                            stdout,
+                            terminal::Clear(ClearType::All),
+                            cursor::MoveTo(0, 0)
+                        )?;
+                        execute!(
+                            stdout,
+                            SetForegroundColor(Color::Green),
+                            SetAttribute(Attribute::Bold)
+                        )?;
+                        write!(stdout, "{msg}\r\n")?;
+                        execute!(stdout, SetAttribute(Attribute::Reset), ResetColor)?;
+                        stdout.flush()?;
+                        // Brief pause so user sees the message
+                        std::thread::sleep(std::time::Duration::from_secs(1));
+                        state = UiState::Menu {
+                            selected: activity_menu_index(),
+                        };
+                        draw(&mut stdout, &state)?;
+                    }
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        *scroll = scroll.saturating_sub(1);
+                        draw(&mut stdout, &state)?;
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        let (_, term_height) = terminal::size().unwrap_or((80, 24));
+                        let visible = (term_height as usize).saturating_sub(3);
+                        let max_scroll = report_text.lines().count().saturating_sub(visible);
+                        *scroll = (*scroll + 1).min(max_scroll);
+                        draw(&mut stdout, &state)?;
+                    }
+                    _ => {}
+                },
             }
         }
     }
@@ -243,21 +348,17 @@ fn run_inner() -> Result<Option<String>, Box<dyn std::error::Error>> {
 
 fn menu_selection_command(selected: usize) -> Option<String> {
     let item = MENU_ITEMS.get(selected)?;
-    if item.key == "range" {
-        None
-    } else {
-        Some(item.key.to_string())
+    match item.key {
+        "range" | "activity" => None,
+        _ => Some(item.key.to_string()),
     }
 }
 
 fn transition_from_menu(selected: usize) -> UiState {
-    if MENU_ITEMS
-        .get(selected)
-        .is_some_and(|item| item.key == "range")
-    {
-        UiState::RangeForm(RangeFormState::default())
-    } else {
-        UiState::Menu { selected }
+    match MENU_ITEMS.get(selected).map(|item| item.key) {
+        Some("range") => UiState::RangeForm(RangeFormState::default()),
+        Some("activity") => UiState::ActivityPeriodSelect { selected: 0 },
+        _ => UiState::Menu { selected },
     }
 }
 
@@ -272,6 +373,31 @@ fn range_menu_index() -> usize {
         .iter()
         .position(|item| item.key == "range")
         .expect("range menu item must exist")
+}
+
+fn activity_menu_index() -> usize {
+    MENU_ITEMS
+        .iter()
+        .position(|item| item.key == "activity")
+        .expect("activity menu item must exist")
+}
+
+fn build_activity_report(
+    db_path: Option<&Path>,
+    months: u32,
+) -> Result<ActivityReport, Box<dyn std::error::Error>> {
+    let path = db_path.ok_or("Database path not available")?;
+    let database = Database::open(path)?;
+    let today = Local::now().date_naive();
+    let (from, to) = activity_report::compute_period_range(months, today);
+    let commits = database.query_date_range(from, to)?;
+    Ok(activity_report::build_report(&commits, from, to, months))
+}
+
+fn empty_report(months: u32) -> ActivityReport {
+    let today = Local::now().date_naive();
+    let (from, to) = activity_report::compute_period_range(months, today);
+    activity_report::build_report(&[], from, to, months)
 }
 
 impl RangeFormState {
@@ -363,81 +489,141 @@ fn draw(stdout: &mut impl Write, state: &UiState) -> io::Result<()> {
         cursor::MoveTo(0, 0)
     )?;
 
-    for line in BANNER.lines() {
-        write!(stdout, "{line}\r\n")?;
-    }
-
-    write!(stdout, "\r\n")?;
-
     match state {
-        UiState::Menu { selected } => {
-            for (i, item) in MENU_ITEMS.iter().enumerate() {
-                let number = i + 1;
+        UiState::ActivityReportView {
+            report_text,
+            scroll,
+            ..
+        } => {
+            let (_, term_height) = terminal::size().unwrap_or((80, 24));
+            let visible_lines = (term_height as usize).saturating_sub(3); // reserve for hints
+            let lines: Vec<&str> = report_text.lines().collect();
+            let max_scroll = lines.len().saturating_sub(visible_lines);
+            let scroll = (*scroll).min(max_scroll);
 
-                if i == *selected {
-                    execute!(
-                        stdout,
-                        SetForegroundColor(Color::Cyan),
-                        SetAttribute(Attribute::Bold)
-                    )?;
-                    write!(
-                        stdout,
-                        "> {number}. {:<12}  {}",
-                        item.label, item.description
-                    )?;
-                    execute!(stdout, SetAttribute(Attribute::Reset), ResetColor)?;
-                } else {
-                    write!(
-                        stdout,
-                        "  {number}. {:<12}  {}",
-                        item.label, item.description
-                    )?;
-                }
-
-                write!(stdout, "\r\n")?;
+            for line in lines.iter().skip(scroll).take(visible_lines) {
+                write!(stdout, "{line}\r\n")?;
             }
 
             write!(stdout, "\r\n")?;
+
             execute!(stdout, SetAttribute(Attribute::Dim))?;
-            let jump_hint = if MENU_ITEMS.len() >= 10 {
-                "1-9 / 0 Jump"
-            } else {
-                "1-9 Jump"
-            };
             write!(
                 stdout,
-                "\u{2191}\u{2193} Navigate  |  Enter Select  |  {jump_hint}  |  Q Quit"
+                "\u{2191}\u{2193} Scroll  |  E Export to markdown  |  Esc Back"
             )?;
             execute!(stdout, SetAttribute(Attribute::Reset))?;
             write!(stdout, "\r\n")?;
         }
-        UiState::RangeForm(form) => {
-            write!(stdout, "Range\r\n")?;
-            write!(stdout, "\r\n")?;
-
-            draw_range_field(stdout, "From", &form.from, form.focus == RangeField::From)?;
-            draw_range_field(stdout, "To", &form.to, form.focus == RangeField::To)?;
-            write!(stdout, "  note: leave To blank to use today\r\n")?;
-            write!(stdout, "\r\n")?;
-
-            if let Some(error) = form.error.as_deref() {
-                execute!(
-                    stdout,
-                    SetForegroundColor(Color::Red),
-                    SetAttribute(Attribute::Bold)
-                )?;
-                write!(stdout, "{error}\r\n")?;
-                execute!(stdout, SetAttribute(Attribute::Reset), ResetColor)?;
-                write!(stdout, "\r\n")?;
+        _ => {
+            for line in BANNER.lines() {
+                write!(stdout, "{line}\r\n")?;
             }
-
-            execute!(stdout, SetAttribute(Attribute::Dim))?;
-            write!(
-                stdout,
-                "Type {RANGE_DATE_FORMATS}  |  Tab/\u{2191}\u{2193} Switch field  |  Enter Submit  |  Esc Back"
-            )?;
-            execute!(stdout, SetAttribute(Attribute::Reset))?;
             write!(stdout, "\r\n")?;
+
+            match state {
+                UiState::Menu { selected } => {
+                    for (i, item) in MENU_ITEMS.iter().enumerate() {
+                        let number = i + 1;
+
+                        if i == *selected {
+                            execute!(
+                                stdout,
+                                SetForegroundColor(Color::Cyan),
+                                SetAttribute(Attribute::Bold)
+                            )?;
+                            write!(
+                                stdout,
+                                "> {number:>2}. {:<16}  {}",
+                                item.label, item.description
+                            )?;
+                            execute!(stdout, SetAttribute(Attribute::Reset), ResetColor)?;
+                        } else {
+                            write!(
+                                stdout,
+                                "  {number:>2}. {:<16}  {}",
+                                item.label, item.description
+                            )?;
+                        }
+
+                        write!(stdout, "\r\n")?;
+                    }
+
+                    write!(stdout, "\r\n")?;
+                    execute!(stdout, SetAttribute(Attribute::Dim))?;
+                    let jump_hint = if MENU_ITEMS.len() >= 10 {
+                        "1-9 / 0 Jump"
+                    } else {
+                        "1-9 Jump"
+                    };
+                    write!(
+                        stdout,
+                        "\u{2191}\u{2193} Navigate  |  Enter Select  |  {jump_hint}  |  Q Quit"
+                    )?;
+                    execute!(stdout, SetAttribute(Attribute::Reset))?;
+                    write!(stdout, "\r\n")?;
+                }
+                UiState::RangeForm(form) => {
+                    write!(stdout, "Range\r\n")?;
+                    write!(stdout, "\r\n")?;
+
+                    draw_range_field(stdout, "From", &form.from, form.focus == RangeField::From)?;
+                    draw_range_field(stdout, "To", &form.to, form.focus == RangeField::To)?;
+                    write!(stdout, "  note: leave To blank to use today\r\n")?;
+                    write!(stdout, "\r\n")?;
+
+                    if let Some(error) = form.error.as_deref() {
+                        execute!(
+                            stdout,
+                            SetForegroundColor(Color::Red),
+                            SetAttribute(Attribute::Bold)
+                        )?;
+                        write!(stdout, "{error}\r\n")?;
+                        execute!(stdout, SetAttribute(Attribute::Reset), ResetColor)?;
+                        write!(stdout, "\r\n")?;
+                    }
+
+                    execute!(stdout, SetAttribute(Attribute::Dim))?;
+                    write!(
+                        stdout,
+                        "Type {RANGE_DATE_FORMATS}  |  Tab/\u{2191}\u{2193} Switch field  |  Enter Submit  |  Esc Back"
+                    )?;
+                    execute!(stdout, SetAttribute(Attribute::Reset))?;
+                    write!(stdout, "\r\n")?;
+                }
+                UiState::ActivityPeriodSelect { selected } => {
+                    write!(stdout, "Activity Report — Select period\r\n")?;
+                    write!(stdout, "\r\n")?;
+
+                    for (i, (_, label)) in PERIOD_OPTIONS.iter().enumerate() {
+                        let number = i + 1;
+                        if i == *selected {
+                            execute!(
+                                stdout,
+                                SetForegroundColor(Color::Cyan),
+                                SetAttribute(Attribute::Bold)
+                            )?;
+                            write!(stdout, "> {number}. {label}")?;
+                            execute!(stdout, SetAttribute(Attribute::Reset), ResetColor)?;
+                        } else {
+                            write!(stdout, "  {number}. {label}")?;
+                        }
+                        write!(stdout, "\r\n")?;
+                    }
+
+                    write!(stdout, "\r\n")?;
+                    execute!(stdout, SetAttribute(Attribute::Dim))?;
+                    write!(
+                        stdout,
+                        "\u{2191}\u{2193} Navigate  |  Enter Select  |  Esc Back"
+                    )?;
+                    execute!(stdout, SetAttribute(Attribute::Reset))?;
+                    write!(stdout, "\r\n")?;
+                }
+                UiState::ActivityReportView { .. } => {
+                    unreachable!("handled in outer match")
+                }
+            }
         }
     }
 
@@ -527,6 +713,7 @@ mod tests {
             "week",
             "month",
             "range",
+            "activity",
             "config",
             "metadata",
             "init",
@@ -554,6 +741,7 @@ mod tests {
                 "week",
                 "month",
                 "range",
+                "activity",
                 "config",
                 "metadata",
                 "init",
@@ -564,14 +752,43 @@ mod tests {
 
     #[test]
     fn selecting_month_returns_month_command() {
-        assert_eq!(menu_selection_command(4), Some("month".to_string()));
+        let month_idx = MENU_ITEMS
+            .iter()
+            .position(|item| item.key == "month")
+            .unwrap();
+        assert_eq!(menu_selection_command(month_idx), Some("month".to_string()));
+    }
+
+    #[test]
+    fn selecting_activity_returns_none_for_inline_handling() {
+        let activity_idx = MENU_ITEMS
+            .iter()
+            .position(|item| item.key == "activity")
+            .unwrap();
+        assert_eq!(menu_selection_command(activity_idx), None);
     }
 
     #[test]
     fn selecting_range_opens_form_state() {
+        let range_idx = MENU_ITEMS
+            .iter()
+            .position(|item| item.key == "range")
+            .unwrap();
         assert_eq!(
-            transition_from_menu(5),
+            transition_from_menu(range_idx),
             UiState::RangeForm(RangeFormState::default())
+        );
+    }
+
+    #[test]
+    fn selecting_activity_opens_period_select() {
+        let activity_idx = MENU_ITEMS
+            .iter()
+            .position(|item| item.key == "activity")
+            .unwrap();
+        assert_eq!(
+            transition_from_menu(activity_idx),
+            UiState::ActivityPeriodSelect { selected: 0 }
         );
     }
 
@@ -713,7 +930,12 @@ mod tests {
     fn range_form_escape_returns_to_menu_without_command() {
         let state = handle_range_form_escape();
 
-        assert_eq!(state, UiState::Menu { selected: 5 });
+        assert_eq!(
+            state,
+            UiState::Menu {
+                selected: range_menu_index()
+            }
+        );
     }
 
     #[test]
