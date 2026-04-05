@@ -153,7 +153,7 @@ fn apply_action(action: Action, selected: usize, item_count: usize) -> usize {
     match action {
         Action::MoveUp => selected.saturating_sub(1),
         Action::MoveDown => (selected + 1).min(item_count - 1),
-        Action::JumpTo(index) => index,
+        Action::JumpTo(index) => index.min(item_count.saturating_sub(1)),
         Action::Select | Action::Quit | Action::None => selected,
     }
 }
@@ -702,6 +702,12 @@ mod tests {
     #[test]
     fn apply_action_jump_to_sets_index_directly() {
         assert_eq!(apply_action(Action::JumpTo(4), 0, 10), 4);
+    }
+
+    #[test]
+    fn apply_action_jump_to_clamps_to_last_item() {
+        assert_eq!(apply_action(Action::JumpTo(9), 0, 4), 3);
+        assert_eq!(apply_action(Action::JumpTo(0), 0, 4), 0);
     }
 
     #[test]

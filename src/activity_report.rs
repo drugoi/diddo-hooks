@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use chrono::{Datelike, Local, NaiveDate, Weekday};
 
@@ -330,6 +330,32 @@ fn next_sunday(date: NaiveDate) -> NaiveDate {
     date + chrono::Duration::days(days_to_sunday as i64)
 }
 
+fn escape_markdown_table_cell(text: &str) -> String {
+    text.replace('|', "\\|")
+}
+
+fn unique_export_path(path: &Path) -> PathBuf {
+    if !path.exists() {
+        return path.to_path_buf();
+    }
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let file_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("diddo_activity_export.md");
+    let (stem, ext) = file_name.rsplit_once('.').unwrap_or((file_name, "md"));
+    for n in 2..=9999 {
+        let candidate = parent.join(format!("{stem}_{n}.{ext}"));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    parent.join(format!("{stem}_{}.{ext}", std::process::id()))
+}
+
 fn format_month_short(month: u32) -> String {
     match month {
         1 => "Jan",
@@ -388,7 +414,11 @@ pub fn render_markdown(report: &ActivityReport) -> String {
     out.push_str("| Repository | Commits |\n");
     out.push_str("| --- | ---: |\n");
     for (repo, count) in &report.top_repos {
-        out.push_str(&format!("| {} | {} |\n", repo, count));
+        out.push_str(&format!(
+            "| {} | {} |\n",
+            escape_markdown_table_cell(repo),
+            count
+        ));
     }
     out.push('\n');
 
@@ -398,7 +428,7 @@ pub fn render_markdown(report: &ActivityReport) -> String {
 pub fn export_markdown(report: &ActivityReport) -> Result<PathBuf, std::io::Error> {
     let today = Local::now().date_naive();
     let filename = format!("diddo_activity_{}_month_{}.md", report.period_months, today);
-    let path = PathBuf::from(&filename);
+    let path = unique_export_path(Path::new(&filename));
     let content = render_markdown(report);
     fs::write(&path, content)?;
     Ok(path)
@@ -569,6 +599,20 @@ mod tests {
     }
 
     #[test]
+    fn render_markdown_escapes_pipe_in_repository_name() {
+        let date = NaiveDate::from_ymd_opt(2026, 3, 10).unwrap();
+        let mut c = make_commit("a|b", date, 4);
+        c.repo_name = "proj|wiki".to_string();
+        let commits = vec![c];
+        let from = NaiveDate::from_ymd_opt(2026, 3, 1).unwrap();
+        let to = NaiveDate::from_ymd_opt(2026, 3, 31).unwrap();
+        let report = build_report(&commits, from, to, 1);
+        let rendered = render_markdown(&report);
+
+        assert!(rendered.contains("| proj\\|wiki |"));
+    }
+
+    #[test]
     fn render_markdown_contains_all_sections() {
         let date = NaiveDate::from_ymd_opt(2026, 3, 10).unwrap();
         let commits = vec![make_commit("my-repo", date, 4)];
@@ -674,6 +718,37 @@ mod tests {
         assert!(content.contains("## Top Repositories"));
 
         // Cleanup
+        std::env::set_current_dir(original_dir).unwrap();
+        std::fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn export_markdown_avoids_overwriting_existing_file() {
+        let tmp =
+            std::env::temp_dir().join(format!("diddo-export-collision-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&tmp).unwrap();
+
+        let date = NaiveDate::from_ymd_opt(2026, 3, 10).unwrap();
+        let commits = vec![make_commit("my-repo", date, 4)];
+        let from = NaiveDate::from_ymd_opt(2026, 3, 1).unwrap();
+        let to = NaiveDate::from_ymd_opt(2026, 3, 31).unwrap();
+        let report = build_report(&commits, from, to, 1);
+
+        let today = chrono::Local::now().date_naive();
+        let first_name = format!("diddo_activity_1_month_{today}.md");
+        std::fs::write(&first_name, "existing").unwrap();
+
+        let path = export_markdown(&report).unwrap();
+
+        assert_eq!(
+            path.file_name().unwrap().to_str().unwrap(),
+            format!("diddo_activity_1_month_{today}_2.md")
+        );
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("# Activity Report"));
+
         std::env::set_current_dir(original_dir).unwrap();
         std::fs::remove_dir_all(&tmp).unwrap();
     }
