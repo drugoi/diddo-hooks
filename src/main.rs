@@ -1,3 +1,4 @@
+mod activity_report;
 mod ai;
 mod config;
 mod db;
@@ -262,7 +263,8 @@ fn main() {
         });
 
     if is_bare_invocation && std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
-        let selected = match interactive::run() {
+        let db_path = paths::AppPaths::new().ok().map(|p| p.db_path);
+        let selected = match interactive::run(db_path.as_deref()) {
             Ok(Some(command)) => command,
             Ok(None) => return,
             Err(error) => {
