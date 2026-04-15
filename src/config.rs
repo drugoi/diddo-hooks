@@ -25,15 +25,20 @@ impl Default for UpdateConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default)]
 pub struct FiltersConfig {
+    #[serde(default = "default_ignored_profiles")]
     pub ignored_profiles: Vec<String>,
 }
 
 impl Default for FiltersConfig {
     fn default() -> Self {
         Self {
-            ignored_profiles: vec![String::from("test@test.com")],
+            ignored_profiles: default_ignored_profiles(),
         }
     }
+}
+
+fn default_ignored_profiles() -> Vec<String> {
+    vec![String::from("test@test.com")]
 }
 
 impl FiltersConfig {
@@ -566,6 +571,21 @@ ignored_profiles = ["bot@example.com", "ci@example.com"]
         );
         assert!(!config.filters.is_ignored(Some("test@test.com")));
         assert!(config.filters.is_ignored(Some("bot@example.com")));
+
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn filters_section_without_key_falls_back_to_default_list() {
+        let temp = temp_dir("filters-section-no-key");
+        let config_path = temp.join("config.toml");
+
+        fs::write(&config_path, "[filters]\n").unwrap();
+
+        let config = AppConfig::load(&config_path).unwrap();
+
+        assert_eq!(config.filters.ignored_profiles, vec!["test@test.com"]);
+        assert!(config.filters.is_ignored(Some("test@test.com")));
 
         fs::remove_dir_all(temp).unwrap();
     }

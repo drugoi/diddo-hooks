@@ -3,7 +3,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::activity_report::{self, ActivityReport, PERIOD_OPTIONS};
-use crate::config::AppConfig;
+use crate::config::{AppConfig, FiltersConfig};
 use crate::db::Database;
 use crate::{RANGE_DATE_FORMATS, parse_supported_date, range_date_format_error};
 use chrono::{Local, NaiveDate};
@@ -173,6 +173,8 @@ pub fn run(
     db_path: Option<&Path>,
     config_path: Option<&Path>,
 ) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    let filters = load_filters(config_path);
+
     terminal::enable_raw_mode()?;
 
     let prev_hook = std::panic::take_hook();
@@ -183,7 +185,7 @@ pub fn run(
         (*prev_hook_rc)(info);
     }));
 
-    let result = run_inner(db_path, config_path);
+    let result = run_inner(db_path, &filters);
 
     let _ = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| (*prev_hook_restore)(info)));
@@ -194,9 +196,25 @@ pub fn run(
     result
 }
 
+fn load_filters(config_path: Option<&Path>) -> FiltersConfig {
+    let Some(path) = config_path else {
+        return FiltersConfig::default();
+    };
+    match AppConfig::load(path) {
+        Ok(config) => config.filters,
+        Err(error) => {
+            eprintln!(
+                "warning: failed to load config from {}: {error}. Using default filters.",
+                path.display()
+            );
+            FiltersConfig::default()
+        }
+    }
+}
+
 fn run_inner(
     db_path: Option<&Path>,
-    config_path: Option<&Path>,
+    filters: &FiltersConfig,
 ) -> Result<Option<String>, Box<dyn std::error::Error>> {
     let mut stdout = io::stdout();
     let mut state = UiState::Menu { selected: 0 };
@@ -266,7 +284,7 @@ fn run_inner(
                     match action {
                         Action::Select => {
                             let (months, _) = PERIOD_OPTIONS[*selected];
-                            match build_activity_report(db_path, config_path, months) {
+                            match build_activity_report(db_path, filters, months) {
                                 Ok(report) => {
                                     let report_text = activity_report::render_terminal(&report);
                                     state = UiState::ActivityReportView {
@@ -391,7 +409,7 @@ fn activity_menu_index() -> usize {
 
 fn build_activity_report(
     db_path: Option<&Path>,
-    config_path: Option<&Path>,
+    filters: &FiltersConfig,
     months: u32,
 ) -> Result<ActivityReport, Box<dyn std::error::Error>> {
     let path = db_path.ok_or("Database path not available")?;
@@ -399,13 +417,6 @@ fn build_activity_report(
     let today = Local::now().date_naive();
     let (from, to) = activity_report::compute_period_range(months, today);
     let mut commits = database.query_date_range(from, to)?;
-    let filters = config_path
-        .map(AppConfig::load)
-        .transpose()
-        .ok()
-        .flatten()
-        .map(|config| config.filters)
-        .unwrap_or_default();
     commits.retain(|c| !filters.is_ignored(c.author_email.as_deref()));
     Ok(activity_report::build_report(&commits, from, to, months))
 }

@@ -502,8 +502,7 @@ fn run_summary_command(cli: ParsedCli) -> Result<(), Box<dyn Error>> {
     let window = resolve_summary_window(selection, today)?;
     let app_config = config::AppConfig::load(&paths.config_path)?;
     let mut commits = load_commits_for_window(&database, &window)?;
-    let filters = app_config.filters.clone();
-    commits.retain(|c| !filters.is_ignored(c.author_email.as_deref()));
+    commits.retain(|c| !app_config.filters.is_ignored(c.author_email.as_deref()));
     let rendered = render_summary_output(
         &database,
         summary_args,
