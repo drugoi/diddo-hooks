@@ -426,9 +426,18 @@ pub fn render_markdown(report: &ActivityReport) -> String {
 }
 
 pub fn export_markdown(report: &ActivityReport) -> Result<PathBuf, std::io::Error> {
+    export_markdown_to_dir(report, Path::new("."))
+}
+
+fn export_markdown_to_dir(
+    report: &ActivityReport,
+    directory: &Path,
+) -> Result<PathBuf, std::io::Error> {
     let today = Local::now().date_naive();
-    let filename = format!("diddo_activity_{}_month_{}.md", report.period_months, today);
-    let path = unique_export_path(Path::new(&filename));
+    let path = unique_export_path(&directory.join(format!(
+        "diddo_activity_{}_month_{}.md",
+        report.period_months, today
+    )));
     let content = render_markdown(report);
     fs::write(&path, content)?;
     Ok(path)
@@ -698,8 +707,6 @@ mod tests {
     fn export_markdown_writes_file_with_correct_name_and_content() {
         let tmp = std::env::temp_dir().join(format!("diddo-export-test-{}", std::process::id()));
         std::fs::create_dir_all(&tmp).unwrap();
-        let original_dir = std::env::current_dir().unwrap();
-        std::env::set_current_dir(&tmp).unwrap();
 
         let date = NaiveDate::from_ymd_opt(2026, 3, 10).unwrap();
         let commits = vec![make_commit("my-repo", date, 4)];
@@ -707,7 +714,7 @@ mod tests {
         let to = NaiveDate::from_ymd_opt(2026, 3, 31).unwrap();
         let report = build_report(&commits, from, to, 1);
 
-        let path = export_markdown(&report).unwrap();
+        let path = export_markdown_to_dir(&report, &tmp).unwrap();
 
         let today = chrono::Local::now().date_naive();
         let expected_name = format!("diddo_activity_1_month_{today}.md");
@@ -717,8 +724,6 @@ mod tests {
         assert!(content.contains("# Activity Report"));
         assert!(content.contains("## Top Repositories"));
 
-        // Cleanup
-        std::env::set_current_dir(original_dir).unwrap();
         std::fs::remove_dir_all(&tmp).unwrap();
     }
 
@@ -727,8 +732,6 @@ mod tests {
         let tmp =
             std::env::temp_dir().join(format!("diddo-export-collision-{}", std::process::id()));
         std::fs::create_dir_all(&tmp).unwrap();
-        let original_dir = std::env::current_dir().unwrap();
-        std::env::set_current_dir(&tmp).unwrap();
 
         let date = NaiveDate::from_ymd_opt(2026, 3, 10).unwrap();
         let commits = vec![make_commit("my-repo", date, 4)];
@@ -737,10 +740,10 @@ mod tests {
         let report = build_report(&commits, from, to, 1);
 
         let today = chrono::Local::now().date_naive();
-        let first_name = format!("diddo_activity_1_month_{today}.md");
+        let first_name = tmp.join(format!("diddo_activity_1_month_{today}.md"));
         std::fs::write(&first_name, "existing").unwrap();
 
-        let path = export_markdown(&report).unwrap();
+        let path = export_markdown_to_dir(&report, &tmp).unwrap();
 
         assert_eq!(
             path.file_name().unwrap().to_str().unwrap(),
@@ -749,7 +752,6 @@ mod tests {
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("# Activity Report"));
 
-        std::env::set_current_dir(original_dir).unwrap();
         std::fs::remove_dir_all(&tmp).unwrap();
     }
 }

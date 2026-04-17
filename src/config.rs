@@ -7,6 +7,7 @@ use serde::Deserialize;
 pub struct AppConfig {
     pub ai: AiConfig,
     pub update: UpdateConfig,
+    pub filters: FiltersConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -18,6 +19,38 @@ pub struct UpdateConfig {
 impl Default for UpdateConfig {
     fn default() -> Self {
         Self { auto_check: true }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct FiltersConfig {
+    #[serde(default = "default_ignored_profiles")]
+    pub ignored_profiles: Vec<String>,
+}
+
+impl Default for FiltersConfig {
+    fn default() -> Self {
+        Self {
+            ignored_profiles: default_ignored_profiles(),
+        }
+    }
+}
+
+fn default_ignored_profiles() -> Vec<String> {
+    vec![String::from("test@test.com")]
+}
+
+impl FiltersConfig {
+    pub fn is_ignored(&self, email: Option<&str>) -> bool {
+        let Some(candidate) = email.map(str::trim).filter(|s| !s.is_empty()) else {
+            return false;
+        };
+        self.ignored_profiles
+            .iter()
+            .map(|entry| entry.trim())
+            .filter(|entry| !entry.is_empty())
+            .any(|entry| entry.eq_ignore_ascii_case(candidate))
     }
 }
 
@@ -502,5 +535,92 @@ prompt_instructions = "  \n\t "
         static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
         ENV_LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    #[test]
+    fn filters_default_contains_test_profile() {
+        let temp = temp_dir("filters-default");
+        let missing = temp.join("config.toml");
+
+        let config = AppConfig::load(&missing).unwrap();
+
+        assert_eq!(config.filters.ignored_profiles, vec!["test@test.com"]);
+        assert!(config.filters.is_ignored(Some("test@test.com")));
+
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn filters_user_list_replaces_defaults() {
+        let temp = temp_dir("filters-override");
+        let config_path = temp.join("config.toml");
+
+        fs::write(
+            &config_path,
+            r#"[filters]
+ignored_profiles = ["bot@example.com", "ci@example.com"]
+"#,
+        )
+        .unwrap();
+
+        let config = AppConfig::load(&config_path).unwrap();
+
+        assert_eq!(
+            config.filters.ignored_profiles,
+            vec!["bot@example.com", "ci@example.com"]
+        );
+        assert!(!config.filters.is_ignored(Some("test@test.com")));
+        assert!(config.filters.is_ignored(Some("bot@example.com")));
+
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn filters_section_without_key_falls_back_to_default_list() {
+        let temp = temp_dir("filters-section-no-key");
+        let config_path = temp.join("config.toml");
+
+        fs::write(&config_path, "[filters]\n").unwrap();
+
+        let config = AppConfig::load(&config_path).unwrap();
+
+        assert_eq!(config.filters.ignored_profiles, vec!["test@test.com"]);
+        assert!(config.filters.is_ignored(Some("test@test.com")));
+
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn filters_empty_list_disables_filtering() {
+        let temp = temp_dir("filters-empty");
+        let config_path = temp.join("config.toml");
+
+        fs::write(
+            &config_path,
+            r#"[filters]
+ignored_profiles = []
+"#,
+        )
+        .unwrap();
+
+        let config = AppConfig::load(&config_path).unwrap();
+
+        assert!(config.filters.ignored_profiles.is_empty());
+        assert!(!config.filters.is_ignored(Some("test@test.com")));
+
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn filters_is_ignored_trims_and_ignores_case() {
+        let filters = super::FiltersConfig {
+            ignored_profiles: vec![String::from("  Test@Test.COM  ")],
+        };
+
+        assert!(filters.is_ignored(Some("test@test.com")));
+        assert!(filters.is_ignored(Some("  TEST@test.com")));
+        assert!(!filters.is_ignored(Some("other@test.com")));
+        assert!(!filters.is_ignored(None));
+        assert!(!filters.is_ignored(Some("   ")));
     }
 }
