@@ -241,7 +241,7 @@ Without extra configuration, it tries installed AI CLIs in this order:
 1. `claude`
 2. `codex`
 3. `opencode`
-4. `cursor`
+4. `cursor-agent`
 
 If no supported CLI is available, `diddo` falls back to a direct API provider when configuration and credentials are available.
 
