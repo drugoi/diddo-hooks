@@ -241,7 +241,7 @@ Without extra configuration, it tries installed AI CLIs in this order:
 1. `claude`
 2. `codex`
 3. `opencode`
-4. `cursor`
+4. `cursor-agent`
 
 If no supported CLI is available, `diddo` falls back to a direct API provider when configuration and credentials are available.
 
@@ -330,6 +330,7 @@ Options:
 | `ai.model` | Model for direct API; defaults: `gpt-4o-mini` (OpenAI), `claude-sonnet-4-6` (Anthropic) |
 | `ai.prompt_instructions` | Custom AI instructions (tone, language, length); period and commit list are always appended |
 | `ai.cli.prefer` | CLI/API preference: `api`, `cli`, `claude`, `codex`, `opencode`, or `cursor-agent` |
+| `filters.ignored_profiles` | List of author emails to exclude from reports. Defaults to `["test@test.com"]`. Set to `[]` to disable filtering. |
 
 Example:
 
@@ -370,6 +371,14 @@ Notes:
 - `ai.api_key` in the config file overrides environment variables
 - `ai.prompt_instructions` (optional): when set, replaces the default AI instructions (tone, language, length); period, commit count, and commit list are always appended. Use for a different language or more concise output. Empty or missing = default instructions.
 - If `ai.provider` is omitted and exactly one of `DIDDO_OPENAI_KEY` or `DIDDO_ANTHROPIC_KEY` is set, `diddo` infers the provider from that environment variable
+- `filters.ignored_profiles` excludes commits whose author email matches any entry (trimmed, case-insensitive) from summary and activity reports. `test@test.com` is ignored by default; override with a custom list or `[]` to keep everything
+
+Example:
+
+```toml
+[filters]
+ignored_profiles = ["test@test.com", "ci-bot@example.com"]
+```
 
 ## Uninstall
 

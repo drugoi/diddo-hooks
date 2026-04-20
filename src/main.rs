@@ -263,8 +263,10 @@ fn main() {
         });
 
     if is_bare_invocation && std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
-        let db_path = paths::AppPaths::new().ok().map(|p| p.db_path);
-        let selected = match interactive::run(db_path.as_deref()) {
+        let resolved_paths = paths::AppPaths::new().ok();
+        let db_path = resolved_paths.as_ref().map(|p| p.db_path.clone());
+        let config_path = resolved_paths.as_ref().map(|p| p.config_path.clone());
+        let selected = match interactive::run(db_path.as_deref(), config_path.as_deref()) {
             Ok(Some(command)) => command,
             Ok(None) => return,
             Err(error) => {
@@ -498,13 +500,15 @@ fn run_summary_command(cli: ParsedCli) -> Result<(), Box<dyn Error>> {
     let database = db::Database::open(&paths.db_path)?;
     let today = Local::now().date_naive();
     let window = resolve_summary_window(selection, today)?;
-    let commits = load_commits_for_window(&database, &window)?;
+    let app_config = config::AppConfig::load(&paths.config_path)?;
+    let mut commits = load_commits_for_window(&database, &window)?;
+    commits.retain(|c| !app_config.filters.is_ignored(c.author_email.as_deref()));
     let rendered = render_summary_output(
         &database,
         summary_args,
         window,
         commits,
-        || Ok(config::AppConfig::load(&paths.config_path)?),
+        move || Ok(app_config),
         ai::create_provider,
     )?;
 
@@ -2130,6 +2134,7 @@ mod tests {
                 },
             },
             update: crate::config::UpdateConfig { auto_check: false },
+            filters: crate::config::FiltersConfig::default(),
         };
 
         let output = format_metadata(&database, 0, &status, &config).unwrap();
