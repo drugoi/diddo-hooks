@@ -14,7 +14,26 @@ env:
   CARGO_TERM_COLOR: never
 
 jobs:
+  test:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run tests
+        run: cargo test --locked
+
+      - name: Check formatting
+        run: cargo fmt -- --check
+
+      - name: Clippy
+        run: cargo clippy -- -D warnings
+
   build-macos:
+    needs: [test]
     runs-on: macos-latest
     strategy:
       fail-fast: false
@@ -58,6 +77,7 @@ jobs:
           path: 'diddo-${{ steps.version.outputs.version }}-${{ matrix.target }}.tar.gz'
 
   build-linux:
+    needs: [test]
     runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
@@ -105,6 +125,7 @@ jobs:
           path: 'diddo-${{ steps.version.outputs.version }}-${{ matrix.target }}.tar.gz'
 
   build-windows:
+    needs: [test]
     runs-on: windows-latest
     steps:
       - name: Checkout
