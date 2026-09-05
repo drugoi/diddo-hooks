@@ -156,7 +156,10 @@ pub fn hooks_status(paths: &AppPaths) -> io::Result<HooksStatus> {
     Ok(HooksStatus { global, local })
 }
 
-fn build_post_commit_script(previous_hooks_path: Option<&str>) -> String {
+fn build_post_commit_script(
+    previous_hooks_path: Option<&str>,
+    include_local_fallback: bool,
+) -> String {
     let mut script = String::from("#!/bin/sh\nset -u\n");
     script.push_str(DIDDO_MANAGED_MARKER);
     script.push_str("\n\ndiddo_status=0\n");
@@ -182,6 +185,12 @@ fn build_post_commit_script(previous_hooks_path: Option<&str>) -> String {
         script.push_str(
             "\nif [ \"$previous_status\" -ne 0 ]; then\n  exit \"$previous_status\"\nfi\n",
         );
+    } else if include_local_fallback {
+        script.push('\n');
+        script.push_str(&build_local_hook_invocation(
+            POST_COMMIT_FILE,
+            Some("local_status"),
+        ));
     }
 
     script.push_str("\nif [ \"$diddo_status\" -ne 0 ]; then\n  exit \"$diddo_status\"\nfi\n");
@@ -189,11 +198,58 @@ fn build_post_commit_script(previous_hooks_path: Option<&str>) -> String {
     script
 }
 
-fn build_forwarding_hook_script(previous_hooks_path: &str, hook_name: &str) -> String {
-    format!(
-        "#!/bin/sh\nset -eu\n\n{}if [ -x \"$previous_hook_path\" ]; then\n  \"$previous_hook_path\" \"$@\"\nfi\n",
-        build_previous_hook_path_resolution(previous_hooks_path, hook_name)
-    )
+fn build_forwarding_hook_script(previous_hooks_path: Option<&str>, hook_name: &str) -> String {
+    let body = match previous_hooks_path {
+        Some(previous_hooks_path) => format!(
+            "{}if [ -x \"$previous_hook_path\" ]; then\n  \"$previous_hook_path\" \"$@\"\nfi\n",
+            build_previous_hook_path_resolution(previous_hooks_path, hook_name)
+        ),
+        None => build_local_hook_invocation(hook_name, None),
+    };
+
+    format!("#!/bin/sh\nset -eu\n\n{body}")
+}
+
+/// Emits the shell fragment that forwards to the repo-local `$GIT_DIR/hooks/<hook_name>`
+/// script if it exists and is executable. `status_var`:
+/// - `Some(name)` records the exit code in `name` and exits with it if non-zero
+///   (used by the post-commit script, which must not use `set -e`).
+/// - `None` lets a non-zero exit propagate via the caller's `set -e` (used by the
+///   forwarding wrapper scripts).
+///
+/// Uses `git rev-parse --git-dir` (not `--git-path hooks`, which honors `core.hooksPath`
+/// and would recurse back into the managed directory) so this resolves the raw per-repo
+/// hooks directory that git would have used without diddo's global `core.hooksPath`.
+fn build_local_hook_invocation(hook_name: &str, status_var: Option<&str>) -> String {
+    let quoted_hook_name = shell_single_quote(hook_name);
+    let mut script = String::new();
+
+    if let Some(status_var) = status_var {
+        script.push_str(&format!("{status_var}=0\n"));
+    }
+
+    script.push_str(&format!(
+        "local_git_dir=\"$(git rev-parse --git-dir 2>/dev/null || true)\"\nlocal_hook_name={quoted_hook_name}\nif [ -n \"$local_git_dir\" ]; then\n  local_hook_path=\"$local_git_dir/hooks/$local_hook_name\"\n  if [ -x \"$local_hook_path\" ]; then\n"
+    ));
+
+    match status_var {
+        Some(status_var) => {
+            script.push_str(&format!(
+                "    \"$local_hook_path\" \"$@\" || {status_var}=$?\n"
+            ));
+        }
+        None => script.push_str("    \"$local_hook_path\" \"$@\"\n"),
+    }
+
+    script.push_str("  fi\nfi\n");
+
+    if let Some(status_var) = status_var {
+        script.push_str(&format!(
+            "if [ \"${status_var}\" -ne 0 ]; then\n  exit \"${status_var}\"\nfi\n"
+        ));
+    }
+
+    script
 }
 
 fn build_previous_hook_invocation(
@@ -236,14 +292,18 @@ where
         previous_hooks_dir.as_ref().map(|state| state.raw.as_str()),
     )?;
 
-    if let Some(previous_hooks_dir) = previous_hooks_dir.as_ref() {
-        create_forwarding_hooks(&previous_hooks_dir.raw, &paths.hooks_dir)?;
-    }
+    create_forwarding_hooks(
+        previous_hooks_dir.as_ref().map(|state| state.raw.as_str()),
+        &paths.hooks_dir,
+    )?;
 
     let generated_post_commit = paths.hooks_dir.join(POST_COMMIT_FILE);
     fs::write(
         &generated_post_commit,
-        build_post_commit_script(previous_hooks_dir.as_ref().map(|state| state.raw.as_str())),
+        build_post_commit_script(
+            previous_hooks_dir.as_ref().map(|state| state.raw.as_str()),
+            true,
+        ),
     )?;
     set_executable_if_unix(&generated_post_commit)?;
 
@@ -349,7 +409,10 @@ fn read_previous_hooks_state(managed_hooks_dir: &Path) -> io::Result<Option<Stri
     }
 }
 
-fn create_forwarding_hooks(previous_hooks_path: &str, managed_hooks_dir: &Path) -> io::Result<()> {
+fn create_forwarding_hooks(
+    previous_hooks_path: Option<&str>,
+    managed_hooks_dir: &Path,
+) -> io::Result<()> {
     for hook_name in HOOK_NAMES {
         if *hook_name == POST_COMMIT_FILE {
             continue;
@@ -494,7 +557,7 @@ fn install_local_hook(
             POST_COMMIT_DIDDO_PREV,
         )
     } else {
-        build_post_commit_script(None)
+        build_post_commit_script(None, false)
     };
 
     fs::write(&post_commit_path, script)?;
@@ -696,15 +759,16 @@ mod tests {
     use std::process::Command;
 
     use super::{
-        HookPathState, POST_COMMIT_DIDDO_PREV, STATE_FILE, build_forwarding_hook_script,
-        build_post_commit_script, install_local_hook, install_with, path_for_script,
-        resolve_diddo_executable, resolve_hooks_path_for_comparison, uninstall_with,
+        HOOK_NAMES, HookPathState, POST_COMMIT_DIDDO_PREV, STATE_FILE,
+        build_forwarding_hook_script, build_post_commit_script, install_local_hook, install_with,
+        path_for_script, resolve_diddo_executable, resolve_hooks_path_for_comparison,
+        uninstall_with,
     };
     use crate::paths::AppPaths;
 
     #[test]
     fn build_post_commit_script_runs_diddo_hook_without_chain_by_default() {
-        let script = build_post_commit_script(None);
+        let script = build_post_commit_script(None, false);
 
         assert!(script.contains("diddo hook"));
         assert!(!script.contains("previous_hooks_path="));
@@ -712,7 +776,7 @@ mod tests {
 
     #[test]
     fn build_post_commit_script_prefers_resolved_diddo_executable_with_path_fallback() {
-        let script = build_post_commit_script(None);
+        let script = build_post_commit_script(None, false);
         let diddo_path = resolve_diddo_executable()
             .unwrap()
             .expect("current executable should be resolvable in tests");
@@ -726,7 +790,7 @@ mod tests {
 
     #[test]
     fn build_post_commit_script_chains_a_previous_post_commit_hook() {
-        let script = build_post_commit_script(Some("/tmp/previous-hooks"));
+        let script = build_post_commit_script(Some("/tmp/previous-hooks"), true);
 
         assert!(script.contains("diddo hook"));
         assert!(script.contains("previous_hooks_path='/tmp/previous-hooks'"));
@@ -737,7 +801,7 @@ mod tests {
 
     #[test]
     fn build_post_commit_script_runs_previous_hook_even_if_diddo_hook_fails() {
-        let script = build_post_commit_script(Some("/tmp/previous-hooks"));
+        let script = build_post_commit_script(Some("/tmp/previous-hooks"), true);
 
         assert!(script.contains("set -u"));
         assert!(!script.contains("set -eu"));
@@ -751,7 +815,7 @@ mod tests {
 
     #[test]
     fn forwarding_wrapper_only_runs_executable_targets() {
-        let script = build_forwarding_hook_script("/tmp/previous-hooks", "pre-commit");
+        let script = build_forwarding_hook_script(Some("/tmp/previous-hooks"), "pre-commit");
 
         assert!(script.contains("if [ -x \"$previous_hook_path\" ]; then"));
         assert!(!script.contains("elif [ -f"));
@@ -760,7 +824,7 @@ mod tests {
 
     #[test]
     fn forwarding_wrapper_preserves_relative_hooks_path_for_runtime_resolution() {
-        let script = build_forwarding_hook_script(".githooks", "pre-commit");
+        let script = build_forwarding_hook_script(Some(".githooks"), "pre-commit");
 
         assert!(script.contains("previous_hooks_path='.githooks'"));
         assert!(script.contains("previous_hook_name='pre-commit'"));
@@ -772,7 +836,7 @@ mod tests {
 
     #[test]
     fn forwarding_wrapper_recognizes_windows_drive_absolute_paths() {
-        let script = build_forwarding_hook_script("C:\\Users\\me\\hooks", "pre-commit");
+        let script = build_forwarding_hook_script(Some("C:\\Users\\me\\hooks"), "pre-commit");
 
         assert!(script.contains("[A-Za-z]:/*|//*)"));
         assert!(script.contains("[A-Za-z]:\\\\*|\\\\\\\\*)"));
@@ -784,13 +848,70 @@ mod tests {
 
     #[test]
     fn forwarding_wrapper_recognizes_unc_absolute_paths() {
-        let script = build_forwarding_hook_script("\\\\server\\share\\hooks", "pre-commit");
+        let script = build_forwarding_hook_script(Some("\\\\server\\share\\hooks"), "pre-commit");
 
         assert!(script.contains("[A-Za-z]:\\\\*|\\\\\\\\*)"));
         assert!(
             script.contains("previous_hook_path=\"$previous_hooks_path\\\\$previous_hook_name\"")
         );
         assert!(script.contains("previous_hooks_path='\\\\server\\share\\hooks'"));
+    }
+
+    #[test]
+    fn forwarding_script_without_previous_contains_local_fallback() {
+        let script = build_forwarding_hook_script(None, "pre-push");
+
+        assert!(script.contains("git rev-parse --git-dir"));
+        assert!(script.contains("local_hook_name='pre-push'"));
+        assert!(script.contains("hooks/$local_hook_name"));
+        assert!(!script.contains("previous_hook_path"));
+    }
+
+    #[test]
+    fn forwarding_script_with_previous_omits_local_fallback() {
+        let script = build_forwarding_hook_script(Some("/prev/hooks"), "pre-push");
+
+        assert!(script.contains("previous_hook_path"));
+        assert!(!script.contains("rev-parse --git-dir"));
+    }
+
+    #[test]
+    fn post_commit_script_contains_local_fallback_for_global_install() {
+        let script = build_post_commit_script(None, true);
+
+        assert!(script.contains("git rev-parse --git-dir"));
+        assert!(script.contains("local_status=0"));
+        assert!(script.contains("if [ \"$local_status\" -ne 0 ]; then"));
+        assert!(script.contains("exit \"$local_status\""));
+    }
+
+    #[test]
+    fn post_commit_script_with_previous_omits_local_fallback() {
+        let script = build_post_commit_script(Some("/prev/hooks"), true);
+
+        assert!(!script.contains("rev-parse --git-dir"));
+        assert!(script.contains("previous_hook_path"));
+    }
+
+    #[test]
+    fn local_install_post_commit_has_no_local_fallback() {
+        let script = build_post_commit_script(None, false);
+
+        assert!(!script.contains("git rev-parse --git-dir"));
+    }
+
+    #[test]
+    fn fresh_install_creates_all_hook_wrappers() {
+        let temp = temp_dir("install-all-wrappers");
+        let hooks_dir = temp.join("managed-hooks");
+        let paths = test_paths(hooks_dir.clone());
+
+        install_with(&paths, || Ok(None), |_managed_dir| Ok(())).unwrap();
+
+        for hook_name in HOOK_NAMES {
+            let hook_path = hooks_dir.join(hook_name);
+            assert!(hook_path.exists(), "missing hook wrapper: {hook_name}");
+        }
     }
 
     #[test]
@@ -864,7 +985,7 @@ mod tests {
         assert!(post_commit.exists());
         assert_eq!(
             fs::read_to_string(post_commit).unwrap(),
-            build_post_commit_script(None)
+            build_post_commit_script(None, true)
         );
         assert_eq!(fs::read_to_string(state_file).unwrap(), "");
         assert_eq!(
@@ -898,7 +1019,7 @@ mod tests {
 
         assert_eq!(
             fs::read_to_string(&generated_post_commit).unwrap(),
-            build_post_commit_script(Some(&previous_hooks_path))
+            build_post_commit_script(Some(&previous_hooks_path), true)
         );
         assert!(generated_pre_commit.exists());
         assert!(
@@ -1051,6 +1172,10 @@ mod tests {
         let script = fs::read_to_string(&post_commit).unwrap();
         assert!(script.contains("diddo hook"));
         assert!(script.contains(super::DIDDO_MANAGED_MARKER));
+        assert!(
+            !script.contains("rev-parse --git-dir"),
+            "local-hooks-dir install must not forward to $GIT_DIR/hooks (exclusivity rule)"
+        );
     }
 
     #[test]

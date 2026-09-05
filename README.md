@@ -78,7 +78,7 @@ What `diddo init` does:
 
 - Creates a managed hooks directory for `diddo`
 - Sets global git `core.hooksPath` to that directory
-- Preserves and forwards any previously configured global hooks so existing hooks keep running
+- Keeps your existing hooks running: forwards to your previously configured global hooks if you had any, otherwise to each repository's own `.git/hooks` (so repo-local hooks like git-lfs keep working) — matching what git itself would have run
 
 On **Windows**, global hooks run only if you use **Git for Windows** (or another Git that runs hook scripts with a Unix-like shell). The generated hooks are `#!/bin/sh` scripts; Git for Windows runs them with its bundled sh.
 
