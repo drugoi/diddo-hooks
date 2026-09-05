@@ -17,7 +17,7 @@ Verification baseline at planning time: `cargo test` → 227 passed, 0 failed;
 
 | Plan | Title | Priority | Effort | Depends on | Status |
 |------|-------|----------|--------|------------|--------|
-| 001 | Gate every release build on a green test suite | P1 | S | — | TODO |
+| 001 | Gate every release build on a green test suite | P1 | S | — | DONE (reviewed, merged to main) |
 | 002 | Harden the release workflow (inputs, permissions, pinning, token) | P1 | S | 001 | TODO |
 | 003 | Keep repo-local .git/hooks running after `diddo init` | P1 | M | — | TODO |
 | 004 | Harden the SQLite open path (busy timeout, WAL, versioned migration) | P1 | S | — | TODO |
