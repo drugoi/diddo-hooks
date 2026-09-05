@@ -21,6 +21,10 @@
 - **Depends on**: plans/001-gate-releases-on-tests.md (same files; do 001 first)
 - **Category**: security
 - **Planned at**: commit `7a8b4ca`, 2026-09-05
+- **Revised**: 2026-09-05 at commit `0bda159` (after Plan 001 merged) — Step 4 corrected:
+  the original text said to pin `dtolnay/rust-toolchain` to its `master` SHA, which would
+  have broken every `Install Rust` step (different `action.yml` input contract). SHAs for
+  all five actions are now pre-resolved in the plan.
 
 ## Why this matters
 
@@ -103,10 +107,20 @@ Add a new first job (before `test` from Plan 001) in `release.yml`:
           VERSION_INPUT: ${{ github.event.inputs.version }}
         run: |
           if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
-            echo "$VERSION_INPUT" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$' \
-              || { echo "Invalid version input: not a semver version" >&2; exit 1; }
+            if [[ ! "$VERSION_INPUT" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]; then
+              echo "Invalid version input: not a semver version" >&2
+              exit 1
+            fi
           fi
 ```
+
+**Use bash `[[ =~ ]]`, not `echo | grep -Eq`.** `grep` matches line by line, so it returns
+success when *any single line* of a multi-line input matches — `printf '%s' "junk\n0.6.7" |
+grep -Eq '^semver$'` exits 0. That makes a `grep`-based check assert far less than it appears
+to ("some line is a version"), which is not fail-closed. Bash's `[[ =~ ]]` anchors against the
+whole string, so an embedded newline fails the match. The default shell for `run:` on
+`ubuntu-latest` is `bash`, so `[[ ]]` is available. Do not quote the regex — quoting makes
+bash match it literally.
 
 Make the `test` job (from Plan 001) `needs: [validate-input]` so everything is transitively gated. Note the pattern: the untrusted value is bound via `env:` and referenced as a shell variable — never `${{ }}`-expanded inside `run:`.
 
@@ -167,13 +181,30 @@ Keep the existing `permissions: contents: write` on the `release` job (it create
 
 ### Step 4: Pin actions to commit SHAs
 
-For each `uses:` in both workflow files, resolve the current SHA of the tag and pin, keeping the tag as a comment:
+For each `uses:` in both workflow files, pin to the commit SHA, keeping the tag as a comment:
 
 ```yaml
         uses: actions/checkout@<sha>  # v6
 ```
 
-Resolve with: `gh api repos/<owner>/<repo>/commits/<tag> --jq .sha` (e.g. `gh api repos/actions/checkout/commits/v6 --jq .sha`). For `dtolnay/rust-toolchain@stable`, pin the *action* to its current master SHA (`gh api repos/dtolnay/rust-toolchain/commits/master --jq .sha`) with comment `# stable toolchain` — the SHA pins the action code, not the Rust version.
+Use exactly these SHAs (resolved and verified 2026-09-05 — do not substitute others):
+
+| Action ref in the files | Pin to this SHA | Trailing comment |
+|---|---|---|
+| `actions/checkout@v6` | `d23441a48e516b6c34aea4fa41551a30e30af803` | `# v6` |
+| `actions/upload-artifact@v7` | `043fb46d1a93c77aae656e7c1c64a875d1fc6a0a` | `# v7` |
+| `actions/download-artifact@v8` | `3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c` | `# v8` |
+| `softprops/action-gh-release@v2` | `3bb12739c298aeb8a4eeaf626c5b8d85266b0e65` | `# v2` |
+| `dtolnay/rust-toolchain@stable` | `6bed0761d98439e5a578e2877258200ad565ba87` | `# stable` |
+
+**Critical — read before pinning `dtolnay/rust-toolchain`.** That repo's branches are not
+interchangeable: they ship *different* `action.yml` contracts. On the `stable` branch the
+`toolchain` input is `required: false` with `default: stable`; on `master` it is
+`required: true` with **no default**. Every `Install Rust` step in this repo calls the action
+with no `toolchain:` input, so pinning to a `master` SHA would break all of them — in
+`release.yml` *and* `test.yml`. Pin the **`stable` branch** SHA given above, and do NOT add a
+`toolchain:` input. If you find yourself resolving `.../commits/master`, you are doing this
+step wrong.
 
 Also add `persist-credentials: false` to every `actions/checkout` step in both files (none of them push to this repo; the `update-homebrew` job authenticates to the tap separately):
 
@@ -185,7 +216,9 @@ Also add `persist-credentials: false` to every `actions/checkout` step in both f
 
 (where a `with:` already exists — e.g. `fetch-depth: 0` in the release job, `targets:` on rust-toolchain — merge into it).
 
-If `gh` is not authenticated or has no network, STOP condition — do not guess SHAs.
+The SHAs above are already resolved, so no network access is needed for this step. If you
+choose to re-verify one with `gh api repos/<owner>/<repo>/commits/<ref> --jq .sha` and it
+disagrees with the table, STOP and report — do not silently prefer either value.
 
 **Verify**: `grep -E 'uses: .+@[0-9a-f]{40}' .github/workflows/release.yml .github/workflows/test.yml | wc -l` equals the total number of `uses:` lines in both files (`grep -c 'uses:' <both files>`).
 
