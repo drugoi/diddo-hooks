@@ -16,10 +16,15 @@
 
 - **Priority**: P1
 - **Effort**: M
-- **Risk**: MED (behavior change: dormant repo-local hooks start firing again — which is the correct behavior)
+- **Risk**: LOW-MED (behavior change: repo-local hooks that `diddo init` silently killed start running again — restoring what git did before diddo)
 - **Depends on**: none (but must land BEFORE plan 014, which edits the same script builders)
 - **Category**: bug
 - **Planned at**: commit `7a8b4ca`, 2026-09-05
+- **Revised**: 2026-09-05 at commit `b4aff1d` — forwarding is now EXCLUSIVE (mirror git's own
+  `core.hooksPath` semantics) rather than additive. The original plan ran the previous-global
+  hook *and* the repo-local hook; that would resurrect `.git/hooks` entries a user's own global
+  `core.hooksPath` had deliberately bypassed. Decided by the maintainer. Test list and done
+  criteria updated to lock the exclusivity in.
 
 ## Why this matters
 
@@ -27,7 +32,7 @@
 
 Consequence: after `diddo init`, every hook a user has in `.git/hooks` in every repo silently stops firing. The most common casualty is `git lfs install`, which writes `pre-push`, `post-checkout`, `post-commit`, and `post-merge` into `.git/hooks` — LFS uploads silently stop. The README claim "Preserves and forwards any previously configured global hooks so existing hooks keep running" is true only for the previous-*global*-path case.
 
-The fix: every hook in the managed directory (all 22 names, always created) must also invoke the repo-local `$GIT_DIR/hooks/<name>` if it exists and is executable.
+The fix: every hook in the managed directory (all 22 names, now always created) must invoke the repo-local `$GIT_DIR/hooks/<name>` if it exists and is executable — but *only* in the case where no previous global `core.hooksPath` was recorded. See the exclusivity rule in Step 2: git treats `core.hooksPath` as a replacement for `.git/hooks`, so forwarding to both would run hooks that git itself would not have.
 
 ## Current state
 
@@ -88,7 +93,8 @@ fn build_forwarding_hook_script(previous_hooks_path: &str, hook_name: &str) -> S
 
 **Out of scope**:
 - The bare-`diddo` PATH fallback inside `build_post_commit_script` — Plan 014 removes it; leave it exactly as-is here.
-- `install_local_hook` / the Husky path (lines 465–504) — local-hooks-dir repos are unaffected by global hooksPath.
+- `install_local_hook` / the Husky path (lines 465–504) — its *behavior* must not change. The one exception, required by Step 2.4, is the mechanical call-site update `build_post_commit_script(None)` → `build_post_commit_script(None, false)` to match the new signature. That single argument is the only edit permitted in that function.
+- `build_post_commit_script_with_previous` (lines 506–532) — leave entirely untouched.
 - `uninstall_with`, `hooks_status`, `src/main.rs`.
 
 ## Git workflow
@@ -128,8 +134,23 @@ fi
 
 ### Step 2: Wire the fallback into both script builders
 
-1. `build_forwarding_hook_script(previous_hooks_path: Option<&str>, hook_name: &str)` — change the first parameter to `Option<&str>`. Script layout: shebang + `set -eu`, then (if `Some`) the existing previous-hook block, then the new local-hook block from Step 1. Order matters: previous-global first (that is what ran before diddo), then repo-local (which git itself would have run last is actually the *only* thing git ran before — order previous-global then local is fine; document the order in a comment in the script template).
-2. `build_post_commit_script(previous_hooks_path: Option<&str>)` — after the existing previous-hook block and before the final `diddo_status` exit check, add the local-hook block in status-recording form (`set -u` only, no `-e`, matching the existing style):
+**The forwarding rule is EXCLUSIVE, not additive — read this before writing any code.**
+Git treats `core.hooksPath` as a *replacement* for `$GIT_DIR/hooks`, never an addition: when a
+hooks path is set, git does not look in `.git/hooks` at all. The managed hook must reproduce
+exactly what git would have run without diddo, which means precisely one of the two blocks is
+emitted, never both:
+
+| Situation at `diddo init` time | What git ran before diddo | What the managed hook must run |
+|---|---|---|
+| No previous global `core.hooksPath` (common) | `$GIT_DIR/hooks/<name>` | the **local** block only |
+| A previous global `core.hooksPath` existed | `<previous>/<name>` only; `.git/hooks` was already dormant | the **previous** block only |
+
+Emitting both would resurrect repo-local hooks that the user's own global `core.hooksPath`
+had deliberately bypassed — a stale or broken `.git/hooks/pre-push` from years ago would
+suddenly start firing. Do not do it, however reasonable "preserve everything" sounds.
+
+1. `build_forwarding_hook_script(previous_hooks_path: Option<&str>, hook_name: &str)` — change the first parameter to `Option<&str>`. Script layout: shebang + `set -eu`, then **either** the existing previous-hook block (when `Some`) **or** the new local-hook block from Step 1 (when `None`). A plain `match`/`if let ... else` — never both arms.
+2. `build_post_commit_script(previous_hooks_path: Option<&str>, include_local_fallback: bool)` — when `previous_hooks_path` is `Some`, keep today's behavior unchanged (previous block, no local block). Only when `previous_hooks_path` is `None` **and** `include_local_fallback` is `true`, insert the local-hook block before the final `diddo_status` exit check, in status-recording form (`set -u` only, no `-e`, matching the existing style):
 
 ```sh
 local_status=0
@@ -145,9 +166,9 @@ if [ "$local_status" -ne 0 ]; then
 fi
 ```
 
-3. **Recursion guard**: none needed beyond the design — the managed dir never lives inside a repo's `$GIT_DIR`, and `--git-dir` ignores `core.hooksPath`. But add a build-time guard anyway: the local block must NOT be emitted for scripts written *into a repo's own hooks dir* by `install_local_hook` (out of scope here, but `build_post_commit_script(None)` is shared with it — see next point).
+3. **Recursion guard**: none needed beyond the design — the managed dir never lives inside a repo's `$GIT_DIR`, and `--git-dir` ignores `core.hooksPath`.
 
-4. `install_local_hook` (line 497) calls `build_post_commit_script(None)` for the Husky case. A local-hooks-dir script invoking `$GIT_DIR/hooks/post-commit` would be wrong there only if `core.hooksPath` (local) differs from `$GIT_DIR/hooks` — which is exactly the Husky case, and `$GIT_DIR/hooks/post-commit` might contain a stale hook. To keep `install_local_hook` behavior unchanged, add a boolean parameter or a separate builder: `build_post_commit_script(previous, include_local_fallback: bool)` — pass `true` from `install_with`, `false` from `install_local_hook`. Same for `build_post_commit_script_with_previous` (leave it without the fallback).
+4. `install_local_hook` (line 497) calls `build_post_commit_script(None)` for the Husky case, and that call site must NOT gain the local fallback: it writes into a repo-local hooks dir that the repo's own `core.hooksPath` points at, so `$GIT_DIR/hooks/post-commit` there is a bypassed, possibly stale hook — the same exclusivity rule. That is what the `include_local_fallback` boolean is for: pass `true` from `install_with`, `false` from `install_local_hook`. Leave `build_post_commit_script_with_previous` (line 506) entirely untouched — it already covers a previous-hook case, so by the exclusivity rule it gets no local block.
 
 **Verify**: `cargo build` exits 0.
 
@@ -180,11 +201,15 @@ Update existing assertions: a fresh install (no previous global path) now produc
 
 New tests (in the existing `#[cfg(test)] mod tests`, following the existing string-assertion style):
 
+Three of these six exist to lock in the exclusivity rule (2, 4, 5) — a change that emitted both
+blocks would still pass 1 and 3, so do not skip them.
+
 1. `forwarding_script_without_previous_contains_local_fallback` — `build_forwarding_hook_script(None, "pre-push")` contains `git rev-parse --git-dir` and `hooks/$local_hook_name` (or the exact emitted line), and does NOT contain `previous_hook_path`.
-2. `forwarding_script_with_previous_runs_previous_then_local` — with `Some("/prev/hooks")`: previous block appears before local block.
+2. `forwarding_script_with_previous_omits_local_fallback` — `build_forwarding_hook_script(Some("/prev/hooks"), "pre-push")` contains `previous_hook_path` and does NOT contain `rev-parse --git-dir`.
 3. `post_commit_script_contains_local_fallback_for_global_install` — `build_post_commit_script(None, true)` contains the local block and the `local_status` exit propagation.
-4. `local_install_post_commit_has_no_local_fallback` — the script written by `install_local_hook` (or `build_post_commit_script(None, false)`) does NOT contain `git rev-parse --git-dir`.
-5. `fresh_install_creates_all_hook_wrappers` — via `install_with` with mocked closures: managed dir contains every name in `HOOK_NAMES`.
+4. `post_commit_script_with_previous_omits_local_fallback` — `build_post_commit_script(Some("/prev/hooks"), true)` does NOT contain `rev-parse --git-dir`.
+5. `local_install_post_commit_has_no_local_fallback` — `build_post_commit_script(None, false)` does NOT contain `git rev-parse --git-dir`. **This is not sufficient on its own**: it pins the builder's behavior but nothing about how `install_local_hook` calls it. Also add an assertion to the *existing* `install_local_hook_adds_post_commit_to_repo_with_local_hooks_path` test (it already reads the written script) that the written script does NOT contain `rev-parse --git-dir`. Without that, flipping `install_local_hook`'s argument to `true` breaks the exclusivity rule with zero test failures — verified by mutation testing during review.
+6. `fresh_install_creates_all_hook_wrappers` — via `install_with` with mocked closures: managed dir contains every name in `HOOK_NAMES`.
 
 **Verify**: `cargo test init::` → all pass. `cargo test` → 0 failed.
 
@@ -209,22 +234,24 @@ Expected: `hook.log` contains `LOCAL-HOOK-RAN` (the managed script forwarded to 
 
 ### Step 6: Update the README
 
-In the "What `diddo init` does" list (README.md ~lines 77–82), change the preserve/forward bullet to state both behaviors, e.g.:
+In the "What `diddo init` does" list (README.md ~lines 77–82), replace the preserve/forward bullet with wording that states the exclusive rule accurately. Do not claim both run. Suggested:
 
-- Preserves and forwards any previously configured global hooks
-- Forwards to each repository's own `.git/hooks` (so repo-local hooks like git-lfs keep running)
+- Keeps your existing hooks running: forwards to your previously configured global hooks if you had any, otherwise to each repository's own `.git/hooks` (so repo-local hooks like git-lfs keep working) — matching what git itself would have run.
+
+Read the surrounding bullets first and match their voice and length.
 
 **Verify**: `grep -n '.git/hooks' README.md` shows the new bullet.
 
 ## Test plan
 
-Covered in Step 4 (5 new tests + updated assertions) and the Step 5 sandbox check. Model new tests after the existing script-content tests in `src/init.rs`'s test module.
+Covered in Step 4 (6 new tests + updated assertions) and the Step 5 sandbox check. Model new tests after the existing script-content tests in `src/init.rs`'s test module.
 
 ## Done criteria
 
-- [ ] `cargo test` → 0 failed, including the 5 new tests
+- [ ] `cargo test` → 0 failed, including the 6 new tests
 - [ ] `cargo clippy -- -D warnings` and `cargo fmt -- --check` exit 0
-- [ ] `grep -c 'rev-parse --git-dir' src/init.rs` ≥ 2 (both builders emit it)
+- [ ] `grep -c 'rev-parse --git-dir' src/init.rs` ≥ 1 (the helper emits it; a shared helper legitimately appears once in non-test code)
+- [ ] Exclusivity holds: no generated script contains both `previous_hook_path` and `rev-parse --git-dir` (tests 2 and 4 cover this)
 - [ ] Step 5 sandbox shows `LOCAL-HOOK-RAN`
 - [ ] `git diff --name-only` ⊆ {`src/init.rs`, `README.md`, `plans/README.md`}
 - [ ] README bullet updated
@@ -241,6 +268,7 @@ Stop and report back if:
 ## Maintenance notes
 
 - Plan 014 rewrites the `diddo`-invocation lines in the same builders — run it after this lands.
-- Behavior change for release notes: repo hooks that were silently dead since `diddo init` will start running again; a user with a broken `.git/hooks/pre-push` will now see it fire. Worth a CHANGELOG line.
+- Behavior change for release notes: in repos where the user had no previous global `core.hooksPath`, hooks in `.git/hooks` that were silently dead since `diddo init` will start running again; a user with a broken `.git/hooks/pre-push` will now see it fire. Users who had a previous global hooks path see no change. Worth a CHANGELOG line.
+- The exclusivity rule (previous-global XOR repo-local) is the load-bearing invariant here. Any future change that makes forwarding additive re-introduces the resurrect-dormant-hooks problem — tests 2 and 4 in the test module exist to catch that.
 - If a future feature adds new hook names to `HOOK_NAMES`, the forwarding + local-fallback structure picks them up automatically — reviewer should confirm no hook name is special-cased except `post-commit`.
 - Deferred: `uninstall` still deletes the managed dir wholesale; unaffected by this plan.
