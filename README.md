@@ -141,7 +141,7 @@ Hooks dir: C:\Users\you\AppData\Roaming\diddo\hooks
 
 ## Usage
 
-Run `diddo` in a terminal to launch **interactive mode** — an arrow-key menu of all available commands. Any `--` flags without a subcommand (e.g. `diddo --table`, `diddo --md`) also launch interactive mode; the flags are ignored.
+Run `diddo` in a terminal to launch **interactive mode** — an arrow-key menu of all available commands. Any `--` flags without a subcommand (e.g. `diddo --table`, `diddo --md`) also launch interactive mode; the flags are ignored. When output is piped or redirected (not a terminal), flags without a subcommand are honored instead: `diddo --json > out.json` emits JSON.
 Interactive mode includes direct shortcuts for `month` and a `range` form that collects `from` and optional `to` dates in either `YYYY-MM-DD` or `DD.MM.YYYY` before launching the command.
 
 Show summaries:
@@ -174,7 +174,7 @@ diddo week --raw
 diddo week --table
 ```
 
-Output flags must be used with a subcommand (`today`, `yesterday`, `week`, `standup`):
+Output flags must be used with a subcommand (`today`, `yesterday`, `week`, `month`, `range`, `standup`) to take effect in interactive (terminal) mode; when piped, flags without a subcommand are honored directly:
 
 - **`--md`** — Output summary as markdown. Includes the repository activity table.
 - **`--json`** — Output summary as JSON.
@@ -202,7 +202,7 @@ diddo week --table
 
 Current CLI behavior:
 
-- `diddo` without a subcommand launches interactive mode in a terminal; any `--` flags are ignored
+- `diddo` without a subcommand launches interactive mode in a terminal; any `--` flags are ignored in a terminal; when piped they are honored
 - `diddo today`, `diddo yesterday`, `diddo week`, `diddo standup` run the corresponding summary directly
 - `diddo standup` shows commits from the last 24 hours (`[now - 24h, now]`), useful when your daily meeting is in the afternoon
 - `diddo` and `diddo today` are equivalent
@@ -210,7 +210,7 @@ Current CLI behavior:
 - `diddo range --from YYYY-MM-DD|DD.MM.YYYY [--to YYYY-MM-DD|DD.MM.YYYY]` shows an inclusive custom date range
 - `diddo range --from ...` defaults `--to` to today's local date
 - `range` accepts both `YYYY-MM-DD` and `DD.MM.YYYY` on input, and normalizes output labels back to `YYYY-MM-DD`
-- Output flags (`--md`, `--json`, `--raw`, `--table`, `--no-cache`) only take effect with a subcommand
+- Output flags (`--md`, `--json`, `--raw`, `--table`, `--no-cache`) only take effect with a subcommand in interactive (terminal) mode; when piped they are honored without a subcommand
 - `--table` is mutually exclusive with `--md`, `--json`, and `--raw`
 - `--raw` skips AI and shows grouped commit data without the activity table
 - `--table` skips AI and shows only the repository activity table

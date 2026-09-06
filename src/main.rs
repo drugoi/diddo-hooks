@@ -220,9 +220,9 @@ where
     }
 
     if only_option_args {
-        return Ok(ParsedCli {
+        return TodayCli::try_parse_from(args).map(|cli| ParsedCli {
             command: None,
-            summary: SummaryArgs::default(),
+            summary: cli.summary,
         });
     }
 
@@ -1145,68 +1145,131 @@ mod tests {
     }
 
     #[test]
-    fn bare_top_level_table_flag_is_treated_as_interactive_invocation() {
+    fn bare_top_level_table_flag_is_honored_when_not_interactive() {
         let cli = parse_cli(["diddo", "--table"]).unwrap();
 
         assert_eq!(
             cli,
             ParsedCli {
                 command: None,
-                summary: SummaryArgs::default(),
+                summary: super::SummaryArgs {
+                    md: false,
+                    raw: false,
+                    json: false,
+                    table: true,
+                    no_cache: false,
+                },
             }
         );
     }
 
     #[test]
-    fn bare_top_level_json_flag_is_treated_as_interactive_invocation() {
+    fn bare_top_level_json_flag_is_honored_when_not_interactive() {
         let cli = parse_cli(["diddo", "--json"]).unwrap();
 
         assert_eq!(
             cli,
             ParsedCli {
                 command: None,
-                summary: SummaryArgs::default(),
+                summary: super::SummaryArgs {
+                    md: false,
+                    raw: false,
+                    json: true,
+                    table: false,
+                    no_cache: false,
+                },
             }
         );
     }
 
     #[test]
-    fn bare_top_level_md_flag_is_treated_as_interactive_invocation() {
+    fn bare_top_level_md_flag_is_honored_when_not_interactive() {
         let cli = parse_cli(["diddo", "--md"]).unwrap();
 
         assert_eq!(
             cli,
             ParsedCli {
                 command: None,
-                summary: SummaryArgs::default(),
+                summary: super::SummaryArgs {
+                    md: true,
+                    raw: false,
+                    json: false,
+                    table: false,
+                    no_cache: false,
+                },
             }
         );
     }
 
     #[test]
-    fn bare_top_level_raw_flag_is_treated_as_interactive_invocation() {
+    fn bare_top_level_raw_flag_is_honored_when_not_interactive() {
         let cli = parse_cli(["diddo", "--raw"]).unwrap();
 
         assert_eq!(
             cli,
             ParsedCli {
                 command: None,
-                summary: SummaryArgs::default(),
+                summary: super::SummaryArgs {
+                    md: false,
+                    raw: true,
+                    json: false,
+                    table: false,
+                    no_cache: false,
+                },
             }
         );
     }
 
     #[test]
-    fn bare_top_level_no_cache_flag_is_treated_as_interactive_invocation() {
+    fn bare_top_level_no_cache_flag_is_honored_when_not_interactive() {
         let cli = parse_cli(["diddo", "--no-cache"]).unwrap();
 
         assert_eq!(
             cli,
             ParsedCli {
                 command: None,
-                summary: SummaryArgs::default(),
+                summary: super::SummaryArgs {
+                    md: false,
+                    raw: false,
+                    json: false,
+                    table: false,
+                    no_cache: true,
+                },
             }
         );
+    }
+
+    #[test]
+    fn parse_cli_honors_output_flags_without_subcommand() {
+        let cli = parse_cli(["diddo", "--md", "--no-cache"]).unwrap();
+
+        assert_eq!(
+            cli,
+            ParsedCli {
+                command: None,
+                summary: super::SummaryArgs {
+                    md: true,
+                    raw: false,
+                    json: false,
+                    table: false,
+                    no_cache: true,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn parse_cli_rejects_unknown_flag_without_subcommand() {
+        let error = parse_cli(["diddo", "--tabel"]).unwrap_err();
+
+        assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
+    }
+
+    #[test]
+    fn parse_cli_rejects_conflicting_output_flags_without_subcommand() {
+        let error = parse_cli(["diddo", "--md", "--json"]).unwrap_err();
+
+        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
     }
 
     #[test]
