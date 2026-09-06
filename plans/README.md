@@ -33,7 +33,7 @@ Verification baseline at planning time: `cargo test` → 227 passed, 0 failed;
 | 014 | Remove the bare-`diddo` PATH fallback from hook scripts | P2 | S | 003 | TODO |
 | 015 | Sanitize rendered git text; escape markdown table cells | P2 | S | — | TODO |
 | 016 | Fence untrusted commit data in AI prompts; restrictive CLI flags | P2 | M | 011, 012, (015) | TODO |
-| 017 | Owner-only permissions for data files; atomic activity export | P2 | S-M | 004 | TODO |
+| 017 | Atomic schema migration; owner-only data-file permissions; atomic activity export | P2 | S-M | 004 (DONE) | TODO |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJECTED (with one-line rationale)
 
@@ -45,7 +45,7 @@ Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJE
 - **011 after 010**: 011 changes provider internals that must route through 010's `summarize_identified` loop.
 - **016 after 011 and 012**: same files (`ai/mod.rs`, `cli_provider.rs`); 016 also reuses plan 015's `sanitize_for_display` when available (soft dependency — it inlines a copy otherwise).
 - **014 after 003**: both rewrite the hook-script builders in `src/init.rs`.
-- **017 after 004**: both edit `Database::open`/`initialize`.
+- **017 after 004**: both edit `Database::open`/`initialize`. 004 is merged, so 017 is unblocked. 017's Step 1 (atomic migration transaction) fixes a pre-existing check-then-`ALTER` race that 004 deliberately did not address — folded in here rather than given its own plan number because it is ~10 lines in a function 017 already rewrites.
 - Independent of everything (any order): 006, 007, 008, 012, 013, 015.
 - main.rs contention: 006, 009, 013, 017 all touch `src/main.rs` in disjoint regions; execute serially, rebase between.
 
@@ -63,6 +63,8 @@ Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJE
 ## Findings considered and rejected
 
 (So nobody re-audits them.)
+
+- **Schema migration runs lazily on `diddo hook`, not during `diddo update`**: decided design (maintainer, 2026-09-06). `run_update_command` never opens the database; migration happens in `Database::initialize` on the next `Database::open` — which for most users is the `diddo hook` fired by their next commit. Migrating inside `diddo update` would miss every user who installed via Homebrew or `cargo install`, so the lazy path is required regardless and a second path would only duplicate it. Do not report this as a bug.
 
 - **Merge commits recorded as 0/0/0 stats**: refuted empirically — `git show --shortstat --format= HEAD` on a merge commit emits first-parent stats on current git (verified in a temp repo during the audit).
 - **"AI HTTP calls can hang forever"**: reqwest 0.13's blocking client has a default 30s total timeout; the real unbounded hang is the CLI subprocess (covered by plan 011).

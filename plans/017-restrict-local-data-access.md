@@ -1,4 +1,4 @@
-# Plan 017: Owner-only permissions for config/database; atomic, symlink-proof activity export
+# Plan 017: Atomic schema migration; owner-only permissions for config/database; atomic, symlink-proof activity export
 
 > **Executor instructions**: Follow this plan step by step. Run every
 > verification command and confirm the expected result before moving to the
@@ -18,8 +18,13 @@
 - **Effort**: S-M
 - **Risk**: LOW
 - **Depends on**: plans/004-harden-sqlite-open-path.md (edits the same `Database::open`; land 004 first)
-- **Category**: security
+- **Category**: security + bug
 - **Planned at**: commit `7a8b4ca`, 2026-09-05
+- **Revised**: 2026-09-06 at commit `2ffe5ac` (after plan 004 merged) — added Step 1, making
+  the schema migration atomic. Folded in here by maintainer decision rather than given its own
+  plan number, because it edits the same `Database::initialize` this plan already touches. The
+  underlying check-then-`ALTER` race is pre-existing (it predates plan 004); plan 004 narrowed
+  how often the probe runs but did not fix the race. Steps renumbered 1→2, 2→3, 3→4, 4→5.
 
 ## Why this matters
 
@@ -81,7 +86,7 @@ fn export_markdown_to_dir(report: &ActivityReport, directory: &Path) -> Result<P
 ## Scope
 
 **In scope**:
-- `src/db.rs` — dir/file modes at creation (unix-gated)
+- `src/db.rs` — atomic migration transaction (Step 1); dir/file modes at creation (unix-gated)
 - `src/activity_report.rs` — atomic `create_new` export
 - `src/main.rs` — one warning line in `format_metadata` when config is insecure and holds a key
 - `src/paths.rs` — ONLY if a shared `#[cfg(unix)]` helper naturally lives there; otherwise don't touch
@@ -100,7 +105,56 @@ fn export_markdown_to_dir(report: &ActivityReport, directory: &Path) -> Result<P
 
 ## Steps
 
-### Step 1: Owner-only modes at creation (db.rs)
+### Step 1: Make the schema migration atomic (db.rs)
+
+Plan 004 left a check-then-act race in the migration path. `run_author_email_migration`
+reads `PRAGMA table_info(commits)`, sees no `author_email`, then runs `ALTER TABLE`. On the
+**first open after upgrading** a pre-`author_email` database, two `diddo hook` processes
+starting at the same instant can both pass the check; the first `ALTER` wins and the second
+fails with `duplicate column name: author_email`. That is a schema error, not a lock error,
+so `busy_timeout` does not retry it — the losing hook exits non-zero and that commit is
+never recorded. Same shape applies to the `user_version` read-then-stamp.
+
+Fix: take the write lock *before* reading the version, so the whole read-migrate-stamp
+sequence is serialized. In `initialize` (post-plan-004 shape), wrap only that sequence —
+the pragmas must stay outside, because `PRAGMA journal_mode = WAL` cannot run inside a
+transaction:
+
+```rust
+    fn initialize(mut connection: Connection) -> Result<Self> {
+        // ... busy_timeout / journal_mode / synchronous pragmas unchanged, OUTSIDE the tx ...
+
+        const SCHEMA_VERSION: i64 = 1;
+        {
+            // BEGIN IMMEDIATE takes the write lock up front, so a second process
+            // blocks here (honoring busy_timeout) and then observes the already
+            // stamped version instead of re-running the ALTER TABLE.
+            let tx = connection
+                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            let version: i64 = tx.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+            if version < SCHEMA_VERSION {
+                tx.execute_batch(SCHEMA)?;
+                run_author_email_migration(&tx)?;
+                tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+            } else if version > SCHEMA_VERSION {
+                return Err(/* unchanged newer-version error from plan 004 */);
+            }
+            tx.commit()?;
+        }
+
+        Ok(Self { connection })
+    }
+```
+
+Notes for the executor:
+- `initialize` currently takes `connection: Connection` by value; change it to `mut connection` so `transaction_with_behavior` (which needs `&mut self`) can borrow it. The parameter is owned, so no caller changes.
+- `run_author_email_migration(&tx)` compiles unchanged — `Transaction` derefs to `Connection`.
+- `ALTER TABLE` and `PRAGMA user_version` are both transactional in SQLite; `PRAGMA journal_mode` is not. Keep the pragma block where plan 004 put it.
+- Keep the newer-version error branch byte-for-byte as plan 004 wrote it, including its message. Returning early from inside the block rolls the transaction back, which is correct.
+
+**Verify**: `cargo test db::` → all pass, including plan 004's `open_upgrades_version_zero_database`, `open_refuses_newer_schema_version`, `schema_version_is_stamped_after_open`, and `wal_mode_enabled_for_file_database`. If `wal_mode_enabled_for_file_database` fails, you have most likely moved a pragma inside the transaction — move it back out.
+
+### Step 2: Owner-only modes at creation (db.rs)
 
 In `Database::open`, after `fs::create_dir_all(parent)` succeeds, set the directory to 0700; after `Connection::open(path)` returns (file now exists), set the DB file to 0600 — both unix-gated, both best-effort-with-propagation choice: propagate errors (they only fire on exotic filesystems; a silent failure would defeat the purpose). Follow the `set_executable_if_unix` idiom:
 
@@ -120,7 +174,7 @@ Note: tightening an *existing* user's 0755 data dir on next run is intended beha
 
 **Verify**: `cargo test db::` all pass. Manual: `rm -rf /tmp/dtest && DIDDO=1 cargo test db:: >/dev/null; ` — better: add the Step 3 test below; also on this machine run `ls -la "$(dirname "$(cargo run --quiet -- config | grep 'Database path' | cut -d: -f2- | xargs)")"` → directory mode `drwx------` after any command that opens the DB (e.g. `cargo run --quiet -- metadata`).
 
-### Step 2: Atomic export (activity_report.rs)
+### Step 3: Atomic export (activity_report.rs)
 
 Replace the check-then-write pair with create-new-or-retry:
 
@@ -153,13 +207,17 @@ Extract the stem/ext suffixing из `unique_export_path` into `numbered_variant(
 
 **Verify**: `cargo test activity_report::` — update any test that called `unique_export_path`; all pass.
 
-### Step 3: Tests
+### Step 4: Tests
+
+0. In `db.rs`, for Step 1: `reopening_a_migrated_database_is_a_noop` — create a legacy-shaped DB at a temp file path (raw `Connection`, the `commits`/`ai_summary_cache` tables WITHOUT `author_email`, `user_version` left at 0), insert one row, then call `Database::open` on that path **twice in a row**. Assert both calls return `Ok`, the row is still present, `author_email` now exists, and `user_version` is 1. This is the regression gate for the double-migration path; without the transaction the second open is still fine sequentially, so ALSO note in your report that the concurrent case is not covered by a deterministic test (see below).
+
+   Optional, only if it is not flaky on this machine: spawn two `std::thread`s that each call `Database::open` on the same fresh legacy DB path and join both; assert both return `Ok`. Run it 20 times locally. If it ever fails or hangs, delete it and say so — a flaky test is worse than no test here.
 
 1. In `db.rs` (unix-gated `#[cfg(unix)] #[test]`): open a DB at a temp path (`std::env::temp_dir().join(unique_name)`), then assert dir mode `& 0o777 == 0o700` and file mode `& 0o777 == 0o600` via `PermissionsExt::mode()`. Clean up.
 2. In `activity_report.rs`: `export_appends_suffix_when_file_exists` — pre-create the dated filename in a temp dir, export, assert the returned path has the `_2` suffix and both files exist (adapt the existing export tests' fixture-building).
 3. `#[cfg(unix)]` `export_refuses_dangling_symlink` — `std::os::unix::fs::symlink("/nonexistent/target", &dated_path)`, export, assert the *symlink was not written through*: the returned path is the `_2` variant (create_new on the symlink path fails AlreadyExists → suffix) AND `/nonexistent/target`... just assert `fs::read_link(&dated_path)` still errors-or-points-to-nonexistent and the returned path ≠ dated_path.
 
-### Step 4: Metadata warning for insecure config
+### Step 5: Metadata warning for insecure config
 
 In `format_metadata` (`src/main.rs`), when (unix) the config file exists, its mode has any group/other bits (`mode & 0o077 != 0`), AND a resolved API key came from the config file, append a line to the output:
 
@@ -173,12 +231,13 @@ Determining "key came from the config file" precisely: `config.ai.api_key.is_som
 
 ## Test plan
 
-Steps 3–4: ~4 new tests (2 unix-gated). Full gate `cargo test` 0 failed.
+Steps 4–5: ~5 new tests (2 unix-gated). Full gate `cargo test` 0 failed.
 
 ## Done criteria
 
 - [ ] `cargo test` 0 failed incl. new tests
 - [ ] `cargo clippy -- -D warnings`; `cargo fmt -- --check` exit 0
+- [ ] The version-read / migrate / stamp sequence in `initialize` runs inside a single `TransactionBehavior::Immediate` transaction, and the `journal_mode`/`synchronous`/`busy_timeout` pragmas remain OUTSIDE it (read the code — `grep -c 'TransactionBehavior::Immediate' src/db.rs` → 1)
 - [ ] `grep -c 'create_new(true)' src/activity_report.rs` → 1; `grep -c 'fn unique_export_path' src/activity_report.rs` → 0
 - [ ] `grep -c '0o600' src/db.rs` ≥ 1 and `grep -c '0o700' src/db.rs` ≥ 1
 - [ ] Manual: after `cargo run --quiet -- metadata`, the data directory lists as `drwx------`
@@ -197,3 +256,5 @@ Stop and report back if:
 - Future `diddo export`/`prune` features (direction findings) must preserve the 0600/0700 regime on anything they create.
 - The export still targets the CWD by design (documented behavior gap is a docs finding); an `--output` flag is the eventual fix — deliberately not smuggled in here.
 - Reviewer should scrutinize: that chmod on every open doesn't fight a user who deliberately loosened permissions — the code comment should state this is a security invariant, overriding manual loosening.
+- Reviewer should also scrutinize Step 1: that the transaction wraps ONLY the version-read / migrate / stamp sequence and that no `PRAGMA journal_mode` call was pulled inside it (SQLite cannot change journal mode inside a transaction — the symptom would be plan 004's `wal_mode_enabled_for_file_database` failing, or WAL silently not engaging).
+- Once Step 1 lands, any future schema migration added under `version < SCHEMA_VERSION` is automatically serialized — keep new migration work inside that transaction rather than adding a second one.
