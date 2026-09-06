@@ -68,17 +68,25 @@ pub fn release_target() -> Option<&'static str> {
 }
 
 fn strip_v(s: &str) -> &str {
-    s.strip_prefix('v').unwrap_or(s).trim()
+    s.trim_start_matches('v').trim()
 }
 
-/// True if latest is newer than current (semver).
-pub fn is_newer(current: &str, latest: &str) -> bool {
+/// Compares two version strings. Returns `None` if either side fails to
+/// parse as semver, `Some(true)` if `latest` is newer than `current`.
+fn compare_versions(current: &str, latest: &str) -> Option<bool> {
     let cur = Version::parse(strip_v(current)).ok();
     let lat = Version::parse(strip_v(latest)).ok();
     match (cur, lat) {
-        (Some(c), Some(l)) => l > c,
-        _ => false,
+        (Some(c), Some(l)) => Some(l > c),
+        _ => None,
     }
+}
+
+/// True if latest is newer than current (semver). Unparseable input is
+/// treated as "not newer" — see `compare_versions` for a version that
+/// distinguishes "not newer" from "could not tell".
+pub fn is_newer(current: &str, latest: &str) -> bool {
+    compare_versions(current, latest).unwrap_or(false)
 }
 
 const GITHUB_RELEASES_URL: &str = "https://api.github.com/repos/drugoi/diddo-hooks/releases/latest";
@@ -106,10 +114,31 @@ struct UpdateCache {
     checked_at: i64,
 }
 
+/// Write the cache atomically (temp file + rename) so a killed thread can't
+/// leave a corrupt half-written file.
+fn write_cache(cache_path: &Path, cache: &UpdateCache) {
+    if let Some(parent) = cache_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(json) = serde_json::to_string(cache) {
+        let tmp = cache_path.with_extension("json.tmp");
+        if std::fs::write(&tmp, json).is_ok() {
+            let _ = std::fs::rename(&tmp, cache_path);
+        }
+    }
+}
+
 /// Check for a newer version, using a file cache to avoid hitting GitHub too often.
 /// Returns `Some(latest_version)` if a newer version is available, `None` otherwise.
 /// Any error is silently swallowed.
 pub fn check_for_update(cache_path: &Path) -> Option<String> {
+    check_for_update_with(cache_path, fetch_latest_release_tag)
+}
+
+fn check_for_update_with<F>(cache_path: &Path, fetch: F) -> Option<String>
+where
+    F: FnOnce() -> Result<String, Box<dyn Error>>,
+{
     let current = env!("CARGO_PKG_VERSION");
 
     // Try reading cached result
@@ -126,34 +155,31 @@ pub fn check_for_update(cache_path: &Path) -> Option<String> {
         }
     }
 
-    // Cache miss or stale — fetch from GitHub
-    let latest = match fetch_latest_release_tag() {
+    // Cache miss or stale — write a throttle record FIRST so a killed process
+    // (e.g. main exits before the fetch below returns) cannot retry before TTL.
+    write_cache(
+        cache_path,
+        &UpdateCache {
+            latest_version: current.to_string(),
+            checked_at: chrono::Utc::now().timestamp(),
+        },
+    );
+
+    // Now perform the fetch. On error, leave the throttle record in place and
+    // return None (this replaces the old error-path negative-cache write —
+    // same effect, now crash-safe).
+    let latest = match fetch() {
         Ok(tag) => tag,
-        Err(_) => {
-            // Negative cache: write current version so we don't retry for TTL
-            let cache = UpdateCache {
-                latest_version: current.to_string(),
-                checked_at: chrono::Utc::now().timestamp(),
-            };
-            if let Some(parent) = cache_path.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            if let Ok(json) = serde_json::to_string(&cache) {
-                let _ = std::fs::write(cache_path, json);
-            }
-            return None;
-        }
+        Err(_) => return None,
     };
-    let cache = UpdateCache {
-        latest_version: latest.clone(),
-        checked_at: chrono::Utc::now().timestamp(),
-    };
-    if let Some(parent) = cache_path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    if let Ok(json) = serde_json::to_string(&cache) {
-        let _ = std::fs::write(cache_path, json);
-    }
+
+    write_cache(
+        cache_path,
+        &UpdateCache {
+            latest_version: latest.clone(),
+            checked_at: chrono::Utc::now().timestamp(),
+        },
+    );
 
     if is_newer(current, &latest) {
         Some(latest)
@@ -186,9 +212,18 @@ pub fn run(assume_yes: bool) -> Result<(), Box<dyn Error>> {
         Ok(tag) => tag,
         Err(e) => return Err(format!("Could not check for updates: {e}").into()),
     };
-    if !is_newer(current, &latest) {
-        println!("diddo is already up to date ({current}).");
-        return Ok(());
+    match compare_versions(current, &latest) {
+        None => {
+            eprintln!(
+                "warning: could not compare versions: release tag '{latest}' is not valid semver"
+            );
+            return Err("Could not check for updates: release tag is not valid semver".into());
+        }
+        Some(false) => {
+            println!("diddo is already up to date ({current}).");
+            return Ok(());
+        }
+        Some(true) => {}
     }
     let exe = std::env::current_exe()?;
     let install_type = current_install_type(&exe);
@@ -313,6 +348,16 @@ mod tests {
     }
 
     #[test]
+    fn strip_v_strips_repeated_prefixes() {
+        assert_eq!(super::strip_v("vv0.4.0"), "0.4.0");
+    }
+
+    #[test]
+    fn compare_versions_returns_none_for_unparseable_latest() {
+        assert_eq!(super::compare_versions("0.6.7", "not-a-version"), None);
+    }
+
+    #[test]
     fn check_for_update_returns_none_when_cache_has_current_version() {
         use super::{UpdateCache, check_for_update};
 
@@ -347,6 +392,117 @@ mod tests {
         std::fs::write(&cache_path, serde_json::to_string(&cache).unwrap()).unwrap();
 
         assert_eq!(check_for_update(&cache_path), Some("99.99.99".to_string()));
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn stale_cache_triggers_fetch_and_stores_result() {
+        use super::{UpdateCache, check_for_update_with};
+
+        let dir =
+            std::env::temp_dir().join(format!("diddo-update-test-stale-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cache_path = dir.join("update_check.json");
+
+        // Cache is older than TTL (2h) and reports an old version.
+        let stale = UpdateCache {
+            latest_version: "0.0.1".to_string(),
+            checked_at: chrono::Utc::now().timestamp() - super::CACHE_TTL_SECS - 1,
+        };
+        std::fs::write(&cache_path, serde_json::to_string(&stale).unwrap()).unwrap();
+
+        let result = check_for_update_with(&cache_path, || Ok("9.9.9".to_string()));
+        assert_eq!(result, Some("9.9.9".to_string()));
+
+        let contents = std::fs::read_to_string(&cache_path).unwrap();
+        let saved: UpdateCache = serde_json::from_str(&contents).unwrap();
+        assert_eq!(saved.latest_version, "9.9.9");
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn throttle_record_written_before_fetch() {
+        use super::{UpdateCache, check_for_update_with};
+        use std::sync::{Arc, Mutex};
+
+        let dir = std::env::temp_dir().join(format!(
+            "diddo-update-test-throttle-before-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cache_path = dir.join("update_check.json");
+        // No pre-existing cache: forces the fetch path.
+
+        let observed: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let observed_clone = Arc::clone(&observed);
+        let cache_path_clone = cache_path.clone();
+
+        let result = check_for_update_with(&cache_path, move || {
+            // Read the cache file HERE, inside the closure, i.e. before the
+            // fetch "returns" — this proves the throttle record is written
+            // before the fetch happens.
+            let contents = std::fs::read_to_string(&cache_path_clone).unwrap();
+            let cache: UpdateCache = serde_json::from_str(&contents).unwrap();
+            *observed_clone.lock().unwrap() = Some(cache.latest_version);
+            Err("net down".into())
+        });
+
+        assert_eq!(result, None);
+        assert_eq!(
+            observed.lock().unwrap().as_deref(),
+            Some(env!("CARGO_PKG_VERSION"))
+        );
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn fetch_error_leaves_throttle_record() {
+        use super::check_for_update_with;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let dir = std::env::temp_dir().join(format!(
+            "diddo-update-test-throttle-after-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cache_path = dir.join("update_check.json");
+
+        // First call: fetch fails, but the pre-written throttle record stays.
+        let first = check_for_update_with(&cache_path, || Err("net down".into()));
+        assert_eq!(first, None);
+
+        // Second immediate call: the fresh throttle record must suppress any
+        // further fetch attempt.
+        let was_called = Arc::new(AtomicBool::new(false));
+        let was_called_clone = Arc::clone(&was_called);
+        let second = check_for_update_with(&cache_path, move || {
+            was_called_clone.store(true, Ordering::SeqCst);
+            Err("net down".into())
+        });
+
+        assert_eq!(second, None);
+        assert!(!was_called.load(Ordering::SeqCst));
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn cache_write_is_atomic() {
+        use super::check_for_update_with;
+
+        let dir =
+            std::env::temp_dir().join(format!("diddo-update-test-atomic-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cache_path = dir.join("update_check.json");
+        let tmp_path = cache_path.with_extension("json.tmp");
+
+        let result = check_for_update_with(&cache_path, || Ok("9.9.9".to_string()));
+        assert_eq!(result, Some("9.9.9".to_string()));
+        assert!(!tmp_path.exists(), "no .json.tmp file should remain");
 
         std::fs::remove_dir_all(dir).unwrap();
     }

@@ -324,8 +324,10 @@ fn run_cli(cli: ParsedCli) {
         std::process::exit(1);
     }
 
+    // The thread throttles itself via the cache file before fetching; killing
+    // it early is safe (but loses this round's answer).
     if let Some(rx) = update_handle
-        && let Ok(Some(latest)) = rx.recv_timeout(StdDuration::from_millis(50))
+        && let Ok(Some(latest)) = rx.recv_timeout(StdDuration::from_millis(1000))
     {
         eprintln!(
             "Update available: {} → {latest}, run `diddo update`",
