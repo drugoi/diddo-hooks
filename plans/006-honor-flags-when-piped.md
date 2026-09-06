@@ -19,6 +19,13 @@
 - **Depends on**: none
 - **Category**: bug
 - **Planned at**: commit `7a8b4ca`, 2026-09-05
+- **Revised**: 2026-09-06 at commit `e695c22` — `src/main.rs` is unchanged since the plan was
+  written, but `README.md` shifted +3 lines (plan 005 added an Install paragraph). Line numbers
+  refreshed. Also: the plan originally named three README lines to fix; there are **four**
+  (line 213 was missed). Added an explicit prohibition on touching the adjacent, separately
+  deferred `month` calendar-vs-rolling docs bug. STOP condition 3 pre-verified — every
+  `MENU_ITEMS` key in `src/interactive.rs` starts with a subcommand word, so the interactive
+  path cannot reach the `only_option_args` branch.
 
 ## Why this matters
 
@@ -47,7 +54,16 @@ The fix is one branch change: the flags-only path in `parse_cli` should parse th
 
 - Tests locking the old behavior live in the `mod tests` of `src/main.rs` (module starts ~line 1015). Find them with: `grep -n 'only_option\|option_args\|ignores' src/main.rs` — expect tests around lines 1161–1210 asserting that flag-only argv yields `SummaryArgs::default()`.
 
-- `README.md:141` documents: "Any `--` flags without a subcommand (e.g. `diddo --table`, `diddo --md`) also launch interactive mode; the flags are ignored." — still true for TTYs; the piped case needs a clarifying sentence. Same for the "Current CLI behavior" bullet at README.md:202.
+- `README.md` makes the now-incomplete "flags are ignored" claim in **four** places. Line numbers below are current as of commit `e695c22` (they shifted +3 when plan 005 added an Install-section paragraph — do not trust older numbers):
+
+| Line | Current text (abbreviated) |
+|---|---|
+| 144 | "Any `--` flags without a subcommand … also launch interactive mode; the flags are ignored." |
+| 177 | "Output flags must be used with a subcommand (`today`, `yesterday`, `week`, `standup`):" |
+| 205 | "- `diddo` without a subcommand launches interactive mode in a terminal; any `--` flags are ignored" |
+| 213 | "- Output flags (`--md`, `--json`, `--raw`, `--table`, `--no-cache`) only take effect with a subcommand" |
+
+All four are true for TTYs and wrong for the piped case after this change. Fix all four — leaving any one of them stale is a half-corrected README.
 
 ## Commands you will need
 
@@ -110,12 +126,16 @@ Also confirm the mutual-exclusion group now applies: `["diddo", "--md", "--json"
 
 ### Step 3: Behavior checks and README
 
-Run the two behavior-check commands from the table; confirm expected output. Then update `README.md`:
+Run the two behavior-check commands from the table; confirm expected output. Then update all four `README.md` lines listed in "Current state":
 
-- Line ~141: append a sentence such as: "When output is piped or redirected (not a terminal), flags without a subcommand are honored instead: `diddo --json > out.json` emits JSON."
-- The "Current CLI behavior" bullet (~line 202) and the "Output flags must be used with a subcommand" line (~line 174): adjust to say flags without a subcommand are ignored *in interactive (terminal) mode* and honored when piped. While editing line 174, also fix a pre-existing doc bug the audit found: the subcommand list omits `month` and `range`, which do accept output flags — add them.
+- **Line 144**: append a sentence such as: "When output is piped or redirected (not a terminal), flags without a subcommand are honored instead: `diddo --json > out.json` emits JSON."
+- **Line 177**: adjust to say flags without a subcommand are ignored *in interactive (terminal) mode* and honored when piped. While editing this line, also fix a pre-existing doc bug the audit found: the subcommand list `(today, yesterday, week, standup)` omits `month` and `range`, which do accept output flags — add them.
+- **Line 205**: qualify "any `--` flags are ignored" with "in a terminal; when piped they are honored".
+- **Line 213**: qualify "only take effect with a subcommand" the same way.
 
-**Verify**: `grep -n 'piped' README.md` shows the new sentence; behavior commands pass.
+**Do NOT touch line 209** ("`diddo month` shows the current calendar month from day 1 through today"). That claim is also wrong — the code implements a rolling 30 days — but it is a separately audited docs finding that was deliberately deferred, and fixing it here would smuggle an unrelated change into this diff. Leave it exactly as-is.
+
+**Verify**: `grep -c 'piped' README.md` ≥ 1; `grep -n 'flags are ignored' README.md` returns no unqualified occurrence; behavior commands pass.
 
 ## Test plan
 
@@ -127,7 +147,9 @@ Step 2's updated + 3 new tests, plus the two runtime checks. Full-suite gate `ca
 - [ ] `cargo run --quiet -- --tabel < /dev/null` exits 2 with a clap error
 - [ ] `diddo` in a TTY with `--table` still opens interactive mode (cannot be tested non-interactively — verify by code inspection that `main()` lines 256–284 are untouched; state this in the report)
 - [ ] `cargo test` 0 failed; `cargo clippy -- -D warnings`; `cargo fmt -- --check` exit 0
-- [ ] `git diff --name-only` ⊆ {src/main.rs, README.md, plans/README.md}
+- [ ] All four README lines (144, 177, 205, 213) qualified; `grep -n 'flags are ignored' README.md` shows no unqualified occurrence
+- [ ] README line 209 (`diddo month` … calendar month) is UNCHANGED — `git diff README.md` must not touch it
+- [ ] `git diff --name-only` ⊆ {src/main.rs, README.md}
 
 ## STOP conditions
 

@@ -22,7 +22,7 @@ Verification baseline at planning time: `cargo test` → 227 passed, 0 failed;
 | 003 | Keep repo-local .git/hooks running after `diddo init` | P1 | M | — | DONE (reviewed after 1 revision, merged to main as `fcb3157`) |
 | 004 | Harden the SQLite open path (busy timeout, WAL, versioned migration) | P1 | S | — | DONE (reviewed, merged to main as `2ffe5ac`) |
 | 005 | Publish SHA256SUMS and verify installer downloads | P1 | M | 001, 002 | DONE (reviewed, on branch `advisor/005-verify-release-downloads`, unmerged; `install.ps1` unverified — no pwsh on this machine) |
-| 006 | Honor output flags when piped, reject unknown flags | P1 | S | — | TODO |
+| 006 | Honor output flags when piped, reject unknown flags | P1 | S | — | DONE (reviewed, on branch `advisor/006-honor-flags-when-piped`, unmerged) |
 | 007 | Fix the background update-check lifecycle | P2 | S | — | TODO |
 | 008 | Slim the per-commit hook (subject-only, fewer spawns, locale-proof) | P2 | M | — | TODO |
 | 009 | Delete the test-only AI shadow path; test and dedupe the real one | P2 | M | — | TODO |
