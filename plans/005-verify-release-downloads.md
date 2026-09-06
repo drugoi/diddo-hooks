@@ -20,12 +20,32 @@
 - **Depends on**: plans/001-gate-releases-on-tests.md, plans/002-harden-release-workflow.md (same workflow file)
 - **Category**: security
 - **Planned at**: commit `7a8b4ca`, 2026-09-05
+- **Revised**: 2026-09-06 at commit `058a376` (after plans 001/002 merged) — corrected the
+  security framing (same-origin checksums are integrity, not authenticity; the real provenance
+  win is Step 2's Homebrew change); added `-f` to the tarball download; flagged that POSIX
+  `grep` version validation is line-oriented and must reject embedded newlines; recorded that
+  line 38 is the only unguarded read `set -u` affects; hardened the functional-check
+  instructions so they cannot overwrite the developer's real `diddo` binary.
 
 ## Why this matters
 
 The two most-advertised install paths — `curl -sSL .../install.sh | sh` and `irm .../install.ps1 | iex` — download and execute a binary whose only trust anchor is TLS to github.com. No checksum is published as a release asset, and neither installer verifies anything. (The Homebrew formula *does* pin SHA256 per target, so brew users are covered.) Additionally, `install.sh` interpolates the unvalidated `DIDDO_VERSION` env var into the download URL, so a malformed pin silently redirects which asset is fetched, and the script runs `set -e` without `set -u`.
 
 This plan makes the release job publish a `SHA256SUMS` asset computed from the exact artifacts it uploads, and makes both installers (a) validate the version string against a strict pattern and (b) verify the downloaded archive against `SHA256SUMS` before installing. It also switches the Homebrew-formula SHA step to use the published sums instead of re-downloading tarballs.
+
+**Be precise about what this does and does not buy — do not oversell it in comments, commit
+messages, or the README line in Step 5.** The installer fetches the archive and the checksum
+file from the same GitHub release over the same TLS connection, so anyone able to tamper with
+one can tamper with the other. This is **integrity, not authenticity**: it catches truncated,
+corrupted, or partially-cached downloads and it gives a stable, well-defined artifact to sign
+later — it does not defend against a compromised GitHub account or release. Authenticity needs
+a signature over `SHA256SUMS` with a key that does not live in the release (minisign/cosign),
+which is a deliberate follow-up, not this plan.
+
+The one place this plan delivers a real provenance win is Step 2. Today `update-homebrew`
+re-downloads each tarball and hashes whatever arrives, so the Homebrew formula pins a hash of
+*a download* rather than of *the artifact that was built*. Consuming the build job's own
+`SHA256SUMS` ties the formula to the bits the release actually produced.
 
 ## Current state
 
@@ -133,7 +153,20 @@ Replace the body of `Compute SHA256 for release assets` with a download of `SHA2
 ### Step 3: Verify in install.sh
 
 1. Line 6: change `set -e` → `set -eu`.
-2. In `get_version`, validate before returning (both the env-var and the resolved-latest paths):
+
+   Note, already checked for you: **line 38 (`if [ -n "$DIDDO_VERSION" ]`) is the only
+   unguarded variable read in the file.** Line 10 already uses `${DIDDO_INSTALL_DIR:-...}`,
+   and every other expansion is of a variable the script itself assigns. So guarding line 38
+   as described in item 2 is sufficient to make `set -u` safe — you do not need to audit the
+   rest of the script for this, but do re-run `sh -n` and the functional checks.
+
+2. Add `-f` to the tarball download on line 64: `curl -fsSL -o "${tmpdir}/${TARBALL}" "$URL"`.
+   Without `-f`, curl writes GitHub's HTML 404 page into the tarball and exits 0, so a bad
+   version currently surfaces as a confusing `tar: not in gzip format` error instead of a
+   missing-release message. This is the same reason the plan specifies `-f` on the
+   `SHA256SUMS` fetch.
+
+3. In `get_version`, validate before returning (both the env-var and the resolved-latest paths):
 
 ```sh
 validate_version() {
@@ -146,7 +179,14 @@ validate_version() {
 
 Call `validate_version "$DIDDO_VERSION"` before echoing it, and `validate_version "${tag#v}"` for the resolved tag. Because `set -u` is now active, guard the env read: `if [ -n "${DIDDO_VERSION:-}" ]; then ...`.
 
-3. After the download, before `tar -xzf`, verify:
+Use `grep -Eq` here and NOT a multi-line-tolerant check — but note the same caveat that applies
+to any `echo "$v" | grep` validation: `grep` matches line by line, so a value containing a
+newline passes if *any* line matches. `install.sh` is POSIX `sh`, so bash's `[[ =~ ]]` is not
+available. Defend by rejecting embedded newlines explicitly, e.g. check that
+`[ "$(printf '%s' "$1" | wc -l)" -eq 0 ]` before the `grep`, or fold the newline check into the
+failure message. A version string is never multi-line, so rejecting outright is correct.
+
+4. After the download, before `tar -xzf`, verify:
 
 ```sh
 sha256_tool() {
@@ -180,7 +220,18 @@ fi
 
 Rationale for the escape hatch: `DIDDO_VERSION` pinning of pre-checksum releases is documented in the README; failing closed with an explicit override keeps the security default without breaking that documented use.
 
-**Verify**: `sh -n install.sh` exits 0. Then a dry functional check against the *latest existing* release (which has no SHA256SUMS yet): `DIDDO_INSTALL_DIR=$(mktemp -d) sh install.sh` → must exit 1 with the "does not publish SHA256SUMS" message; and `DIDDO_SKIP_CHECKSUM=1 DIDDO_INSTALL_DIR=$(mktemp -d) sh install.sh` → installs with the warning. Also `DIDDO_VERSION='bogus/../path' sh install.sh` → exits 1 with "Invalid version".
+**Verify**: `sh -n install.sh` exits 0. Then functional checks against the *latest existing* release (which has no SHA256SUMS yet):
+
+- `DIDDO_INSTALL_DIR=$(mktemp -d) sh install.sh` → must exit 1 with the "does not publish SHA256SUMS" message
+- `DIDDO_SKIP_CHECKSUM=1 DIDDO_INSTALL_DIR=$(mktemp -d) sh install.sh` → installs with the warning
+- `DIDDO_VERSION='bogus/../path' DIDDO_INSTALL_DIR=$(mktemp -d) sh install.sh` → exits 1 with "Invalid version"
+- `DIDDO_VERSION='0.6.7' DIDDO_INSTALL_DIR=$(mktemp -d) sh install.sh` → reaches the checksum stage (proves a *valid* version still passes validation — a regex that rejects everything would pass the three checks above)
+
+**Always pass `DIDDO_INSTALL_DIR=$(mktemp -d)`** on every invocation, including the failure
+cases. Without it the script installs to `$HOME/.local/bin` and would overwrite the real
+`diddo` binary on this machine. The first two checks hit the network; if the environment has
+no network access, say so plainly in your report and do not fabricate results — the syntax
+check and careful review still stand, and the reviewer will run the functional checks.
 
 ### Step 4: Verify in install.ps1
 
@@ -199,14 +250,16 @@ In the Install section, after the curl/irm commands, add one line: installers ve
 
 ## Test plan
 
-No Rust tests. Functional gates: the three install.sh invocations in Step 3's verify block (missing-sums failure, skip-var success, bogus-version rejection). Report to the operator: the first release after merge should be a prerelease tag to confirm the `SHA256SUMS` asset appears and `update-homebrew` reads it.
+No Rust tests. Functional gates: the four install.sh invocations in Step 3's verify block (missing-sums failure, skip-var success, bogus-version rejection, valid-version acceptance). Report to the operator: the first release after merge should be a prerelease tag to confirm the `SHA256SUMS` asset appears and `update-homebrew` reads it.
 
 ## Done criteria
 
 - [ ] `sh -n install.sh` exit 0; the three functional invocations behave as specified
 - [ ] `SHA256SUMS` generated in the `Collect release assets` step and consumed by `update-homebrew`
-- [ ] Version validation present in both installers (`grep -c 'Invalid version' install.sh install.ps1` → ≥1 each)
+- [ ] Version validation present in both installers (`grep -c 'Invalid version' install.sh install.ps1` → ≥1 each), and a *valid* version still passes it
 - [ ] `set -eu` in install.sh
+- [ ] Both `curl` downloads in install.sh use `-f` (`grep -c 'curl -fsSL' install.sh` → ≥2): the tarball and the SHA256SUMS fetch
+- [ ] Version validation rejects a value containing an embedded newline (POSIX `grep` is line-oriented; see Step 3)
 - [ ] YAML check `ok`; `git diff --name-only` ⊆ {release.yml, install.sh, install.ps1, README.md, plans/README.md}
 - [ ] `plans/README.md` status row updated (and the deferred `diddo update` verification noted there)
 
