@@ -47,10 +47,13 @@ To pin a version:
 $env:DIDDO_VERSION = "0.1.0"; irm https://raw.githubusercontent.com/drugoi/diddo-hooks/main/install.ps1 | iex
 ```
 
+Both installers verify the downloaded archive's integrity against the release's `SHA256SUMS` asset before installing. Pinning a version older than the first release that published `SHA256SUMS` requires `DIDDO_SKIP_CHECKSUM=1` to install anyway.
+
 Install options (environment variables):
 
 - **DIDDO_VERSION** — Pin the install to a specific release (e.g. `0.1.0`).
 - **DIDDO_INSTALL_DIR** — Directory where the binary is installed. Defaults: `$HOME/.local/bin` (macOS/Linux), `%LOCALAPPDATA%\diddo` (Windows).
+- **DIDDO_SKIP_CHECKSUM** — Set to `1` to skip checksum verification when installing a release that predates `SHA256SUMS` publication.
 
 Alternatively, download the `diddo-<version>-x86_64-pc-windows-msvc.zip` (or ARM64) from [Releases](https://github.com/drugoi/diddo-hooks/releases), extract `diddo.exe`, and add the folder to your PATH.
 

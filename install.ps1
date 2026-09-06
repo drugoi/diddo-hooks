@@ -20,8 +20,16 @@ function Get-Target {
     }
 }
 
+function Test-Version {
+    param([string]$v)
+    if ($v -notmatch '^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$') {
+        Write-Error "Invalid version '$v'"
+    }
+}
+
 function Get-Version {
     if ($env:DIDDO_VERSION) {
+        Test-Version $env:DIDDO_VERSION
         return $env:DIDDO_VERSION
     }
     try {
@@ -30,17 +38,24 @@ function Get-Version {
         if ($_.Exception.Response.StatusCode -eq 302) {
             $location = $_.Exception.Response.Headers["Location"]
             if ($location -match "/tag/v(.+)$") {
-                return $Matches[1].TrimEnd('/')
+                $resolved = $Matches[1].TrimEnd('/')
+                Test-Version $resolved
+                return $resolved
             }
+        } else {
+            throw
         }
     }
     $apiUrl = "https://api.github.com/repos/$Repo/releases/latest"
     $release = Invoke-RestMethod -Uri $apiUrl
     $tag = $release.tag_name
     if ($tag -match "^v(.+)$") {
-        return $Matches[1]
+        $resolved = $Matches[1]
+    } else {
+        $resolved = $tag
     }
-    return $tag
+    Test-Version $resolved
+    return $resolved
 }
 
 $Target = Get-Target
@@ -53,6 +68,35 @@ $TempZip = Join-Path ([System.IO.Path]::GetTempPath()) $ZipName
 
 Write-Host "Downloading diddo $Version for $Target..."
 Invoke-WebRequest -Uri $Url -OutFile $TempZip -UseBasicParsing
+
+$SumsUrl = "$BaseUrl/releases/download/v$Version/SHA256SUMS"
+$TempSums = Join-Path ([System.IO.Path]::GetTempPath()) "diddo-$Version-SHA256SUMS"
+$SumsDownloaded = $true
+try {
+    Invoke-WebRequest -Uri $SumsUrl -OutFile $TempSums -UseBasicParsing -ErrorAction Stop
+} catch {
+    $SumsDownloaded = $false
+}
+
+if ($SumsDownloaded) {
+    $sumsLine = Get-Content $TempSums | Where-Object { $_ -match ([regex]::Escape($ZipName) + '$') } | Select-Object -First 1
+    if (-not $sumsLine) {
+        Write-Error "Release v$Version has no checksum entry for $ZipName; aborting."
+    }
+    $expected = ($sumsLine -split '\s+')[0].ToLower()
+    $actual = (Get-FileHash -Algorithm SHA256 $TempZip).Hash.ToLower()
+    if ($actual -ne $expected) {
+        Write-Error "Checksum mismatch for ${ZipName}: expected $expected, got $actual. Aborting."
+    }
+    Write-Host "Checksum verified."
+    Remove-Item -Path $TempSums -Force -ErrorAction SilentlyContinue
+} else {
+    if ($env:DIDDO_SKIP_CHECKSUM -eq "1") {
+        Write-Host "WARNING: no SHA256SUMS published for v$Version; skipping verification (DIDDO_SKIP_CHECKSUM=1)."
+    } else {
+        Write-Error "Release v$Version does not publish SHA256SUMS (older release?). Set `$env:DIDDO_SKIP_CHECKSUM = '1' to install anyway, or pin a newer version."
+    }
+}
 
 Write-Host "Extracting to $InstallDir..."
 Expand-Archive -Path $TempZip -DestinationPath $InstallDir -Force

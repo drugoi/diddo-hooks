@@ -255,6 +255,8 @@ jobs:
           for f in artifacts/*.tar.gz artifacts/*.zip; do
             [ -f "$f" ] && cp "$f" "release/$(basename "$f")"
           done
+          (cd release && sha256sum *.tar.gz *.zip > SHA256SUMS)
+          cat release/SHA256SUMS
           ls -la release/
 
       - name: Create Release
@@ -290,8 +292,10 @@ jobs:
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           BASE="https://github.com/drugoi/diddo-hooks/releases/download/v${VERSION}"
+          curl -fsSL -o SHA256SUMS "${BASE}/SHA256SUMS"
           for target in aarch64-apple-darwin x86_64-apple-darwin aarch64-unknown-linux-gnu x86_64-unknown-linux-gnu; do
-            hash=$(curl -sL "${BASE}/diddo-${VERSION}-${target}.tar.gz" | sha256sum | awk '{print $1}')
+            hash=$(awk -v f="diddo-${VERSION}-${target}.tar.gz" '$2 == f {print $1}' SHA256SUMS)
+            [ -n "$hash" ] || { echo "No checksum for ${target}" >&2; exit 1; }
             key=$(echo "$target" | tr '-' '_')
             echo "${key}=${hash}" >> $GITHUB_OUTPUT
           done
