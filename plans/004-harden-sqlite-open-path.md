@@ -20,6 +20,11 @@
 - **Depends on**: none
 - **Category**: bug
 - **Planned at**: commit `7a8b4ca`, 2026-09-05
+- **Revised**: 2026-09-05 at commit `fcb3157` — Step 1 corrected. The original set
+  `synchronous=NORMAL` unconditionally while tolerating a failed WAL switch; `NORMAL` is only
+  corruption-safe *in WAL mode*, so that combination introduced a small corruption window on
+  filesystems where WAL is unavailable. `synchronous` is now gated on WAL actually engaging,
+  read back via `pragma_update_and_check`. Added test 6 to prove the pairing on a real file DB.
 
 ## Why this matters
 
@@ -109,14 +114,36 @@ In `initialize`, before the schema work:
 ```rust
     fn initialize(connection: Connection) -> Result<Self> {
         connection.busy_timeout(std::time::Duration::from_secs(5))?;
-        // WAL avoids journal churn and lets a reader coexist with the hook's writer.
-        // On in-memory databases this returns "memory" — pragma_update tolerates it.
-        let _ = connection.pragma_update(None, "journal_mode", "WAL");
-        connection.pragma_update(None, "synchronous", "NORMAL")?;
+
+        // WAL lets a reader coexist with the hook's writer and removes the
+        // rollback-journal create/delete churn on every commit. It can legitimately
+        // fail on filesystems without shared memory (NFS/SMB home directories), and
+        // on in-memory databases it simply reports "memory" — diddo must keep working
+        // in both cases, so a non-WAL outcome is tolerated rather than fatal.
+        let journal_mode = connection
+            .pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get::<_, String>(0))
+            .unwrap_or_default();
+
+        // synchronous=NORMAL is corruption-safe ONLY in WAL mode. SQLite documents a
+        // small but non-zero chance of corruption on power loss when NORMAL is combined
+        // with a rollback journal, so if WAL did not take effect leave synchronous at
+        // its default (FULL) and accept the slower writes.
+        if journal_mode.eq_ignore_ascii_case("wal") {
+            connection.pragma_update(None, "synchronous", "NORMAL")?;
+        }
         ...
 ```
 
-Use `pragma_update` (not `execute_batch`) because `journal_mode` returns a result row. The `let _ =` on journal_mode is deliberate: in-memory databases (used by every test) report `memory` and some rusqlite versions surface that as an error — WAL is an optimization, not a correctness requirement; do not fail open() over it. `synchronous` and `busy_timeout` must propagate errors.
+**Do not set `synchronous=NORMAL` unconditionally.** The two pragmas are a package deal:
+`NORMAL` is only safe because WAL makes it safe. Setting `NORMAL` while tolerating a failed
+WAL switch leaves a corruption window on exactly the filesystems where WAL is unavailable —
+which is the opposite of hardening. Read the mode back and gate on it, as above.
+
+Use `pragma_update_and_check` for `journal_mode` (it wraps `query_row`, and `journal_mode`
+returns the resulting mode as a row). Note for accuracy: in rusqlite 0.38 plain `pragma_update`
+is implemented with `execute_batch` and so would *not* error on a row-returning pragma — but it
+also discards the result, which is the value you need here. `busy_timeout` must propagate its
+error.
 
 **Verify**: `cargo test db::` → all pass (in-memory DBs tolerate the pragmas).
 
@@ -195,17 +222,19 @@ Add to `db.rs`'s test module (model after existing tests there):
 2. `open_upgrades_version_zero_database` — create a `Connection::open_in_memory()`, run the old `SCHEMA` batch manually, leave `user_version` 0, then pass it through `initialize` (make `initialize` reachable from tests — it is a private fn in the same module, so tests can call it): expect Ok and version 1.
 3. `open_refuses_newer_schema_version` — set `PRAGMA user_version = 99` on a raw connection, run `initialize`, expect `Err` whose Display contains `newer than this diddo build`.
 4. `nonexistent_local_midnight_falls_forward` — call `date_range_bounds_in_timezone` with a hand-built `TimeZone` impl whose `from_local_datetime` returns `LocalResult::None` for 00:00 and `Single` for 01:00. Implementing `chrono::TimeZone` is verbose; if it exceeds ~50 lines, an acceptable fallback is to extract the `LocalResult` match into a helper `fn resolve_local_midnight(...)` taking the `LocalResult` directly, and unit-test that helper with constructed `LocalResult` values. Choose whichever is less code.
-5. `busy_timeout_is_set` — open two connections to the same temp-file DB (`std::env::temp_dir()`-based path with a unique name, cleaned up at test end), hold an exclusive transaction on one (`BEGIN IMMEDIATE` + an insert), and assert the second connection's insert does not fail instantly with `DatabaseBusy`... a timing-based test is flaky; instead just assert `PRAGMA busy_timeout` returns `5000` on an opened DB. Keep it deterministic.
+5. `busy_timeout_is_set` — assert `PRAGMA busy_timeout` returns `5000` on an opened DB. Do NOT write a timing-based contention test; it would be flaky. Keep it deterministic.
+6. `wal_mode_enabled_for_file_database` — open a `Database::open()` on a unique path under `std::env::temp_dir()`, assert `PRAGMA journal_mode` is `wal` and `PRAGMA synchronous` is `1` (NORMAL). Then remove the DB **and its `-wal`/`-shm` sidecars** at test end. This is the test that proves the Step 1 pairing actually engages on a real file — the in-memory tests cannot show it, since in-memory databases report `memory` and correctly keep `synchronous` at its default.
 
-**Verify**: `cargo test db::` → all pass, including 5 new tests. `cargo test` → 0 failed.
+**Verify**: `cargo test db::` → all pass, including the 6 new tests. `cargo test` → 0 failed.
 
 ## Test plan
 
-Steps 5.1–5.5 above. No existing test should need modification (in-memory open keeps working). Full-suite gate: `cargo test` 0 failed.
+Steps 5.1–5.6 above. No existing test should need modification (in-memory open keeps working). Full-suite gate: `cargo test` 0 failed.
 
 ## Done criteria
 
-- [ ] `cargo test` → 0 failed, ≥5 new db tests present
+- [ ] `cargo test` → 0 failed, ≥6 new db tests present
+- [ ] `synchronous=NORMAL` is set only inside a branch conditional on WAL being active (grep the code and read it — an unconditional `pragma_update(None, "synchronous", ...)` fails this criterion)
 - [ ] `cargo clippy -- -D warnings` and `cargo fmt -- --check` exit 0
 - [ ] `grep -c 'ToSqlConversionFailure' src/db.rs` → 0
 - [ ] `grep -c 'user_version' src/db.rs` ≥ 2
@@ -225,5 +254,6 @@ Stop and report back if:
 
 - Future schema changes: bump `SCHEMA_VERSION`, add a gated migration step in the `version < SCHEMA_VERSION` branch; never add another unconditional `table_info` probe.
 - WAL sidecar files (`commits.db-wal`, `commits.db-shm`) now appear next to the DB; if a future `uninstall`/export feature copies or deletes the DB file, it must handle all three files.
-- Reviewer should scrutinize: that `journal_mode` failure is tolerated but `busy_timeout`/`synchronous` failures propagate, and that the DST fallback picks the earliest existing hour.
+- Reviewer should scrutinize: that a non-WAL `journal_mode` outcome is tolerated, that `busy_timeout` failures propagate, that `synchronous=NORMAL` is applied ONLY when WAL actually engaged (never unconditionally), and that the DST fallback picks the earliest existing hour.
+- `rusqlite::ffi` is confirmed importable at rusqlite 0.38 with the `bundled` feature (`pub use libsqlite3_sys as ffi`), and `ffi::Error::new`, `SQLITE_MISMATCH`, `SQLITE_CANTOPEN` all exist — the corresponding STOP condition should not trigger.
 - Deferred deliberately: a proper `DbError` enum (would ripple through every caller); reconsider if db error handling grows again.
