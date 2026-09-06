@@ -20,6 +20,12 @@
 - **Depends on**: none
 - **Category**: bug
 - **Planned at**: commit `7a8b4ca`, 2026-09-05
+- **Revised**: 2026-09-06 at commit `ed793f0` — the notice wait is now **1000 ms**, not 300 ms
+  (maintainer decision). At 300 ms the plan did not achieve its own stated goal: a fetch slower
+  than the wait is killed with the process, its answer is never cached, and the throttle record
+  written in Step 1 then masks the notice for the full 2 h TTL — so on a slow-ish connection the
+  notice would still never appear. Corrected the maintenance note, which wrongly claimed slow
+  fetches "surface on the next invocation".
 
 ## Why this matters
 
@@ -148,7 +154,29 @@ Keep `CACHE_TTL_SECS`, `UpdateCache`, and the fresh-cache logic byte-for-byte wh
 
 ### Step 2: Wire the pre-throttle guarantee (already done by Step 1's ordering) and widen the notice window
 
-In `src/main.rs:328`, change `StdDuration::from_millis(50)` → `StdDuration::from_millis(300)`. Rationale: the fresh-cache path answers in microseconds (file read, no network), so 300 ms only ever delays exit in the stale-cache case, capped well below annoyance; and because Step 1 writes the throttle record *before* fetching, a fetch that outlives the process is harmless. Add a one-line comment stating the invariant: "the thread throttles itself via the cache file before fetching; killing it early is safe."
+In `src/main.rs:328`, change `StdDuration::from_millis(50)` → `StdDuration::from_millis(1000)`.
+
+Rationale, and why 1000 rather than a snappier number: the wait costs nothing on the common
+path, because a fresh cache answers from a file read in microseconds and `recv_timeout` returns
+immediately. It is only consumed when a network fetch is genuinely in flight, which is at most
+once per `CACHE_TTL_SECS` (2 h) window.
+
+The value has to exceed typical GitHub API latency or the whole feature stays broken. If the
+process exits before the fetch returns, the thread is killed and the real answer is **never
+written to the cache** — while the throttle record written in Step 1 says `latest_version =
+current`, which suppresses the notice for the full TTL. So with too short a wait, a slow-ish
+connection means the user never sees an update notice at all: the fetch is always discarded and
+always masked. One second catches the large majority of round-trips, and once a fetch does
+complete, the real answer is cached and the notice then shows on every invocation for 2 hours.
+
+Worst case is a ~1 s pause on a single non-hook command once per 2 h window (this is also what
+an offline user pays, since `fetch_latest_release_tag` has its own 5 s timeout). `diddo hook`
+is unaffected — `spawn_update_check` skips `Hook` and `Update` commands entirely, so the
+per-commit path never waits. **This value was chosen by the maintainer; do not "optimize" it
+downward.**
+
+Add a one-line comment stating the invariant: "the thread throttles itself via the cache file
+before fetching; killing it early is safe (but loses this round's answer)."
 
 **Verify**: `cargo build` exits 0.
 
@@ -180,7 +208,7 @@ Steps 3 and 4 add ~6 tests. Manual sanity (optional, network required): `rm <upd
 
 - [ ] `cargo test` 0 failed; ≥6 new/updated update tests
 - [ ] `cargo clippy -- -D warnings` and `cargo fmt -- --check` exit 0
-- [ ] `grep -c 'from_millis(300)' src/main.rs` → 1 and `grep -c 'from_millis(50)' src/main.rs` → 0
+- [ ] `grep -c 'from_millis(1000)' src/main.rs` → 1 and `grep -c 'from_millis(50)' src/main.rs` → 0 (note: an unrelated `from_millis(80)` spinner tick exists elsewhere in the file — leave it alone)
 - [ ] `grep -c 'rename' src/update.rs` ≥ 1 (atomic write in place)
 - [ ] `git diff --name-only` ⊆ {src/update.rs, src/main.rs, plans/README.md}
 
@@ -194,6 +222,6 @@ Stop and report back if:
 
 ## Maintenance notes
 
-- The throttle-before-fetch pattern means a *successful* check within 300 ms still shows the notice, and slower ones surface on the next invocation (from cache) — acceptable by design; note in review.
+- The throttle-before-fetch pattern deliberately conflates "we could not find out" with "you are up to date": a killed fetch leaves `latest_version = current`, so the notice is suppressed until the TTL expires. That is the price of not spamming GitHub, and it is why the wait must be long enough to usually catch the fetch (see Step 2). A future refinement, if this ever matters, is to split the record into `last_attempt_at` (throttle) and an optional `latest_version` (last known answer) so the two states are distinguishable — deliberately not done here.
 - If a future change adds authenticated GitHub requests, the TTL/throttle logic is the single place rate policy lives.
 - Reviewer should scrutinize: that the error path no longer double-writes (old code wrote the negative cache in the error arm; new code relies on the pre-written throttle record).

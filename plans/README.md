@@ -23,7 +23,7 @@ Verification baseline at planning time: `cargo test` → 227 passed, 0 failed;
 | 004 | Harden the SQLite open path (busy timeout, WAL, versioned migration) | P1 | S | — | DONE (reviewed, merged to main as `2ffe5ac`) |
 | 005 | Publish SHA256SUMS and verify installer downloads | P1 | M | 001, 002 | DONE (reviewed, on branch `advisor/005-verify-release-downloads`, unmerged; `install.ps1` unverified — no pwsh on this machine) |
 | 006 | Honor output flags when piped, reject unknown flags | P1 | S | — | DONE (reviewed, on branch `advisor/006-honor-flags-when-piped`, unmerged) |
-| 007 | Fix the background update-check lifecycle | P2 | S | — | TODO |
+| 007 | Fix the background update-check lifecycle | P2 | S | — | DONE (reviewed, on branch `advisor/007-fix-update-check-lifecycle`, unmerged) |
 | 008 | Slim the per-commit hook (subject-only, fewer spawns, locale-proof) | P2 | M | — | TODO |
 | 009 | Delete the test-only AI shadow path; test and dedupe the real one | P2 | M | — | TODO |
 | 010 | Cache AI summaries under the provider that produced them | P2 | M | 009 | TODO |
