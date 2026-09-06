@@ -34,6 +34,7 @@ Verification baseline at planning time: `cargo test` → 227 passed, 0 failed;
 | 015 | Sanitize rendered git text; escape markdown table cells | P2 | S | — | TODO |
 | 016 | Fence untrusted commit data in AI prompts; restrictive CLI flags | P2 | M | 011, 012, (015) | TODO |
 | 017 | Atomic schema migration; owner-only data-file permissions; atomic activity export | P2 | S-M | 004 (DONE) | TODO |
+| 018 | Make prerelease tags safe (pre-release flag, skip Homebrew) | P1 | S | 001, 002, 005 (all DONE) | DONE (reviewed, on branch `advisor/018-gate-prereleases`, unmerged) |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJECTED (with one-line rationale)
 
