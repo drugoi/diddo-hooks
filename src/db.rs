@@ -1,4 +1,4 @@
-use std::{fs, path::Path};
+use std::{fs, path::Path, process::Command};
 
 use chrono::{DateTime, Local, LocalResult, NaiveDate, TimeZone, Utc};
 use rusqlite::{Connection, Result, Row, params, types::Type};
@@ -78,7 +78,7 @@ impl Database {
         Self::initialize(connection)
     }
 
-    fn initialize(connection: Connection) -> Result<Self> {
+    fn initialize(mut connection: Connection) -> Result<Self> {
         connection.busy_timeout(std::time::Duration::from_secs(5))?;
 
         // WAL lets a reader coexist with the hook's writer and removes the
@@ -98,19 +98,29 @@ impl Database {
             connection.pragma_update(None, "synchronous", "NORMAL")?;
         }
 
-        const SCHEMA_VERSION: i64 = 1;
-        let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-        if version < SCHEMA_VERSION {
-            connection.execute_batch(SCHEMA)?;
-            run_author_email_migration(&connection)?;
-            connection.pragma_update(None, "user_version", SCHEMA_VERSION)?;
-        } else if version > SCHEMA_VERSION {
+        const SCHEMA_VERSION: i64 = 2;
+        let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        if version > SCHEMA_VERSION {
             return Err(rusqlite::Error::SqliteFailure(
                 rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_MISMATCH),
                 Some(format!(
                     "database schema version {version} is newer than this diddo build supports ({SCHEMA_VERSION}); upgrade diddo (run `diddo update`)"
                 )),
             ));
+        }
+        if version < SCHEMA_VERSION {
+            let tx =
+                connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            let version: i64 = tx.pragma_query_value(None, "user_version", |row| row.get(0))?;
+            if version == 0 {
+                tx.execute_batch(SCHEMA)?;
+                run_author_email_migration(&tx)?;
+            }
+            if version < SCHEMA_VERSION {
+                run_commit_hash_migration(&tx)?;
+                tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+            }
+            tx.commit()?;
         }
 
         Ok(Self { connection })
@@ -154,6 +164,41 @@ impl Database {
         )?;
 
         Ok(())
+    }
+
+    /// Inserts a row only when no commit exists for `(repo_path, hash)`.
+    /// Returns `true` if a new row was inserted. Unlike [`Self::insert_commit`], this does not
+    /// overwrite diff stats or other fields when the commit already exists (e.g. hook vs onboard).
+    pub fn insert_commit_if_new(&self, commit: &Commit) -> Result<bool> {
+        let rows = self.connection.execute(
+            "INSERT INTO commits (
+                hash,
+                message,
+                repo_path,
+                repo_name,
+                branch,
+                files_changed,
+                insertions,
+                deletions,
+                committed_at,
+                author_email
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            ON CONFLICT(repo_path, hash) DO NOTHING",
+            params![
+                &commit.hash,
+                &commit.message,
+                &commit.repo_path,
+                &commit.repo_name,
+                &commit.branch,
+                commit.files_changed,
+                commit.insertions,
+                commit.deletions,
+                commit.committed_at.to_rfc3339(),
+                &commit.author_email,
+            ],
+        )?;
+
+        Ok(rows > 0)
     }
 
     pub fn query_date(&self, date: NaiveDate) -> Result<Vec<Commit>> {
@@ -244,6 +289,83 @@ fn run_author_email_migration(conn: &Connection) -> Result<()> {
     if !author_email_column_exists(conn)? {
         conn.execute("ALTER TABLE commits ADD COLUMN author_email TEXT", [])?;
     }
+    Ok(())
+}
+
+fn hash_is_all_hex(hash: &str) -> bool {
+    !hash.is_empty() && hash.as_bytes().iter().all(|b| b.is_ascii_hexdigit())
+}
+
+fn hash_looks_like_full_oid(hash: &str) -> bool {
+    let len = hash.len();
+    (len == 40 || len == 64) && hash_is_all_hex(hash)
+}
+
+fn git_rev_parse_oid(repo_path: &Path, oid: &str) -> Option<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo_path)
+        .args(["rev-parse", "--verify", "--end-of-options"])
+        .arg(format!("{oid}^{{commit}}"))
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let trimmed = text.trim();
+    if hash_looks_like_full_oid(trimmed) && trimmed.starts_with(oid) {
+        Some(trimmed.to_string())
+    } else {
+        None
+    }
+}
+
+fn run_commit_hash_migration(conn: &Connection) -> Result<()> {
+    let mut stmt =
+        conn.prepare("SELECT repo_path, hash FROM commits WHERE length(hash) NOT IN (40, 64)")?;
+    let pairs: Vec<(String, String)> = stmt
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<Result<Vec<_>>>()?;
+
+    for (repo_path, hash) in pairs {
+        if !hash_is_all_hex(&hash) {
+            continue;
+        }
+
+        let repo = Path::new(&repo_path);
+        if !repo.is_dir() {
+            continue;
+        }
+
+        let Some(full) = git_rev_parse_oid(repo, &hash) else {
+            continue;
+        };
+        if full == hash {
+            continue;
+        }
+
+        let existing_full: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM commits WHERE repo_path = ?1 AND hash = ?2",
+            params![&repo_path, &full],
+            |row| row.get(0),
+        )?;
+
+        if existing_full > 0 {
+            conn.execute(
+                "DELETE FROM commits WHERE repo_path = ?1 AND hash = ?2",
+                params![&repo_path, &hash],
+            )?;
+        } else {
+            conn.execute(
+                "UPDATE commits SET hash = ?1 WHERE repo_path = ?2 AND hash = ?3",
+                params![&full, &repo_path, &hash],
+            )?;
+        }
+    }
+
     Ok(())
 }
 
@@ -340,6 +462,7 @@ mod tests {
     use std::{
         fs,
         path::Path,
+        process::Command,
         time::{SystemTime, UNIX_EPOCH},
     };
 
@@ -576,6 +699,183 @@ mod tests {
     }
 
     #[test]
+    fn migration_expands_abbreviated_commit_hashes_with_git_repo() {
+        if !git_cli_available() {
+            return;
+        }
+
+        let root = unique_temp_path("diddo-hash-migration-expand");
+        let repo = root.join("repo");
+        fs::create_dir_all(&repo).unwrap();
+        run_git(&repo, &["init"]);
+        run_git(&repo, &["config", "user.email", "migration@test.local"]);
+        run_git(&repo, &["config", "user.name", "Migration Test"]);
+        fs::write(repo.join("f.txt"), "x").unwrap();
+        run_git(&repo, &["add", "f.txt"]);
+        run_git(&repo, &["commit", "-m", "init"]);
+
+        let repo_path = git_stdout_trim(&repo, &["rev-parse", "--show-toplevel"]);
+        let short = git_stdout_trim(&repo, &["rev-parse", "--short", "HEAD"]);
+        let full = git_stdout_trim(&repo, &["rev-parse", "HEAD"]);
+        assert_ne!(
+            short, full,
+            "expected abbreviated hash to differ from full oid"
+        );
+
+        let db_path = root.join("d.sqlite");
+        let committed_at = Utc::now();
+        let today = committed_at.with_timezone(&Local).date_naive();
+        {
+            let database = Database::open(&db_path).unwrap();
+            let commit = Commit {
+                id: None,
+                hash: short.clone(),
+                message: "hook-era short hash".to_string(),
+                repo_path: repo_path.clone(),
+                repo_name: "repo".to_string(),
+                branch: "main".to_string(),
+                files_changed: 1,
+                insertions: 1,
+                deletions: 0,
+                committed_at,
+                author_email: None,
+            };
+            database.insert_commit(&commit).unwrap();
+            assert_eq!(database.commit_count().unwrap(), 1);
+            database
+                .connection
+                .pragma_update(None, "user_version", 1)
+                .unwrap();
+            drop(database);
+        }
+
+        {
+            let database = Database::open(&db_path).unwrap();
+            assert_eq!(database.commit_count().unwrap(), 1);
+            let commits = database.query_date(today).unwrap();
+            assert_eq!(commits.len(), 1);
+            assert_eq!(commits[0].hash, full);
+            let imported = Commit {
+                files_changed: 0,
+                insertions: 0,
+                ..commits[0].clone()
+            };
+            assert!(!database.insert_commit_if_new(&imported).unwrap());
+            assert_eq!(database.query_date(today).unwrap()[0].insertions, 1);
+        }
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn migration_drops_abbreviated_row_when_full_hash_row_exists() {
+        if !git_cli_available() {
+            return;
+        }
+
+        let root = unique_temp_path("diddo-hash-migration-dedupe");
+        let repo = root.join("repo");
+        fs::create_dir_all(&repo).unwrap();
+        run_git(&repo, &["init"]);
+        run_git(&repo, &["config", "user.email", "migration@test.local"]);
+        run_git(&repo, &["config", "user.name", "Migration Test"]);
+        fs::write(repo.join("f.txt"), "x").unwrap();
+        run_git(&repo, &["add", "f.txt"]);
+        run_git(&repo, &["commit", "-m", "init"]);
+
+        let repo_path = git_stdout_trim(&repo, &["rev-parse", "--show-toplevel"]);
+        let short = git_stdout_trim(&repo, &["rev-parse", "--short", "HEAD"]);
+        let full = git_stdout_trim(&repo, &["rev-parse", "HEAD"]);
+        assert_ne!(short, full);
+
+        let committed_at = Utc::now();
+        let today = committed_at.with_timezone(&Local).date_naive();
+        let db_path = root.join("d.sqlite");
+        {
+            let database = Database::open(&db_path).unwrap();
+            database
+                .insert_commit(&Commit {
+                    id: None,
+                    hash: short,
+                    message: "short".to_string(),
+                    repo_path: repo_path.clone(),
+                    repo_name: "repo".to_string(),
+                    branch: "main".to_string(),
+                    files_changed: 1,
+                    insertions: 1,
+                    deletions: 0,
+                    committed_at,
+                    author_email: None,
+                })
+                .unwrap();
+            database
+                .insert_commit(&Commit {
+                    id: None,
+                    hash: full.clone(),
+                    message: "full".to_string(),
+                    repo_path: repo_path.clone(),
+                    repo_name: "repo".to_string(),
+                    branch: "main".to_string(),
+                    files_changed: 2,
+                    insertions: 2,
+                    deletions: 1,
+                    committed_at,
+                    author_email: Some("x@y.z".to_string()),
+                })
+                .unwrap();
+            assert_eq!(database.commit_count().unwrap(), 2);
+            database
+                .connection
+                .pragma_update(None, "user_version", 1)
+                .unwrap();
+            drop(database);
+        }
+
+        {
+            let database = Database::open(&db_path).unwrap();
+            assert_eq!(database.commit_count().unwrap(), 1);
+            let commits = database.query_date(today).unwrap();
+            assert_eq!(commits.len(), 1);
+            assert_eq!(commits[0].hash, full);
+        }
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    fn git_cli_available() -> bool {
+        Command::new("git")
+            .arg("--version")
+            .output()
+            .is_ok_and(|o| o.status.success())
+    }
+
+    fn run_git(repo: &Path, args: &[&str]) {
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(args)
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {:?} failed", args);
+    }
+
+    fn git_stdout_trim(repo: &Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {:?} stderr={}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    #[test]
     fn reinserting_same_commit_updates_incomplete_metadata() {
         let database = Database::open_in_memory().unwrap();
         let today = Local::now().date_naive();
@@ -769,7 +1069,7 @@ mod tests {
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
 
-        assert_eq!(version, 1);
+        assert_eq!(version, 2);
     }
 
     #[test]
@@ -787,7 +1087,7 @@ mod tests {
             .connection
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 1);
+        assert_eq!(version, 2);
     }
 
     #[test]

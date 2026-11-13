@@ -42,6 +42,9 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87  # stable
+        with:
+          toolchain: "1.93.0"
+          components: rustfmt, clippy
 
       - name: Run tests
         run: cargo test --locked
@@ -81,6 +84,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87  # stable
         with:
+          toolchain: "1.93.0"
           targets: ${{ matrix.target }}
 
       - name: Build
@@ -129,6 +133,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87  # stable
         with:
+          toolchain: "1.93.0"
           targets: ${{ matrix.target }}
 
       - name: Install aarch64 cross-compiler
@@ -175,6 +180,8 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87  # stable
+        with:
+          toolchain: "1.93.0"
 
       - name: Build
         run: cargo build --release
