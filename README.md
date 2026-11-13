@@ -258,6 +258,24 @@ diddo update
 - **`diddo metadata`** — Show database metadata: file size, total commit count, oldest recorded commit, and hooks status (global and local). Use it to verify your setup; it shows hints when something is misconfigured (e.g. `Local hooks: .husky (missing diddo hook — run 'diddo init')`).
 - **`diddo update`** — Self-update to the latest release (detects Homebrew vs GitHub install; use `--yes` to skip the confirmation prompt).
 
+### Pruning commit history
+
+`diddo prune` removes local commit records older than 365 days. It prints the UTC cutoff and record count, then asks for confirmation. Use `--dry-run` to preview or `--yes` to confirm in a script.
+
+```sh
+diddo prune --dry-run
+diddo prune --days 90
+```
+
+Set a default in `config.toml`:
+
+```toml
+[retention]
+days = 365
+```
+
+Pruning runs only when you call `diddo prune`. It clears cached summaries when records are removed. Git history stays intact.
+
 ## AI Providers
 
 `diddo` is CLI-first by default.

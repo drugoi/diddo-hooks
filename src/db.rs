@@ -243,6 +243,35 @@ impl Database {
         Ok(None)
     }
 
+    pub fn count_commits_before(path: &Path, cutoff: &str) -> Result<i64> {
+        let connection =
+            Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        connection.busy_timeout(std::time::Duration::from_secs(5))?;
+        connection.query_row(
+            "SELECT COUNT(*) FROM commits WHERE committed_at < ?1",
+            [cutoff],
+            |row| row.get(0),
+        )
+    }
+
+    pub fn prune_commits(&mut self, cutoff: &str, expected: i64) -> Result<usize> {
+        let tx = self
+            .connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let removed = tx.execute("DELETE FROM commits WHERE committed_at < ?1", [cutoff])?;
+        if i64::try_from(removed).ok() != Some(expected) {
+            return Err(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_ABORT),
+                Some("Commit history changed during prune. Run 'diddo prune' again.".into()),
+            ));
+        }
+        if removed != 0 {
+            tx.execute("DELETE FROM ai_summary_cache", [])?;
+        }
+        tx.commit()?;
+        Ok(removed)
+    }
+
     pub fn set_cached_summary(&self, cache_key: &str, summary: &str) -> Result<()> {
         self.connection.execute(
             "INSERT OR REPLACE INTO ai_summary_cache (cache_key, summary) VALUES (?1, ?2)",
@@ -918,6 +947,30 @@ mod tests {
         let error = database.query_date_range(today, yesterday).unwrap_err();
 
         assert!(matches!(error, rusqlite::Error::InvalidQuery));
+    }
+
+    #[test]
+    fn prune_keeps_boundary_commits_and_rolls_back_if_count_changes() {
+        let mut database = Database::open_in_memory().unwrap();
+        database
+            .connection
+            .execute_batch(
+                "INSERT INTO commits (hash, message, repo_path, repo_name, branch, committed_at)
+             VALUES ('old', '', '/repo', 'repo', 'main', '2025-11-13T00:00:00.999+00:00'),
+                    ('boundary', '', '/repo', 'repo', 'main', '2025-11-13T00:00:01+00:00'),
+                    ('later', '', '/repo', 'repo', 'main', '2025-11-13T00:00:01.001+00:00');",
+            )
+            .unwrap();
+        database.set_cached_summary("key", "old history").unwrap();
+        let cutoff = "2025-11-13T00:00:01";
+
+        assert!(database.prune_commits(cutoff, 2).is_err());
+        assert_eq!(database.commit_count().unwrap(), 3);
+        assert!(database.get_cached_summary("key").unwrap().is_some());
+
+        assert_eq!(database.prune_commits(cutoff, 1).unwrap(), 1);
+        assert_eq!(database.commit_count().unwrap(), 2);
+        assert!(database.get_cached_summary("key").unwrap().is_none());
     }
 
     #[test]
