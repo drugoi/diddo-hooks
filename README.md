@@ -1,10 +1,21 @@
 # diddo
 
-`diddo` tracks your git commits and turns them into daily summaries.
+`diddo` records Git commits locally and generates daily summaries.
 
-It installs a global `post-commit` hook, stores commit metadata in a local SQLite database, and can summarize that history with an AI CLI tool or a direct API provider.
+![Example output from diddo today --table and diddo standup --raw](assets/diddo-demo.gif)
 
-![diddo today output](assets/diddo.png)
+## Quick start
+
+After [installing diddo](#install), run:
+
+```bash
+diddo init
+diddo today --table
+diddo standup --raw
+diddo week --md
+```
+
+Run `diddo onboard` inside a repository to import its history. For the activity heatmap, run `diddo` and select **Activity Report**.
 
 ## Install
 
@@ -187,10 +198,6 @@ diddo month --md
 diddo range --from 2026-03-01 --json
 diddo range --from 2026-03-01 --to 2026-03-11 --raw
 diddo today --no-cache
-diddo yesterday --json
-diddo yesterday --table
-diddo week --raw
-diddo week --table
 ```
 
 Output flags must be used with a subcommand (`today`, `yesterday`, `week`, `month`, `range`, `standup`) to take effect in interactive (terminal) mode; when piped, flags without a subcommand are honored directly:
@@ -224,8 +231,7 @@ Current CLI behavior:
 - `diddo` without a subcommand launches interactive mode in a terminal; any `--` flags are ignored in a terminal; when piped they are honored
 - `diddo today`, `diddo yesterday`, `diddo week`, `diddo standup` run the corresponding summary directly
 - `diddo standup` shows commits from the last 24 hours (`[now - 24h, now]`), useful when your daily meeting is in the afternoon
-- `diddo` and `diddo today` are equivalent
-- `diddo month` shows the current calendar month from day 1 through today
+- `diddo month` shows a rolling 30-day window ending today
 - `diddo range --from YYYY-MM-DD|DD.MM.YYYY [--to YYYY-MM-DD|DD.MM.YYYY]` shows an inclusive custom date range
 - `diddo range --from ...` defaults `--to` to today's local date
 - `range` accepts both `YYYY-MM-DD` and `DD.MM.YYYY` on input, and normalizes output labels back to `YYYY-MM-DD`
