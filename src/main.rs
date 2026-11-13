@@ -1,3 +1,4 @@
+mod activity_report;
 mod ai;
 mod config;
 mod db;
@@ -10,7 +11,7 @@ mod render;
 mod summary_group;
 mod update;
 
-use chrono::{DateTime, Datelike, Duration, Local, NaiveDate, Utc};
+use chrono::{DateTime, Duration, Local, NaiveDate, Utc};
 use clap::{ArgGroup, Args, Parser, Subcommand};
 use indicatif::{ProgressBar, ProgressStyle};
 use sha2::{Digest, Sha256};
@@ -107,9 +108,9 @@ enum Commands {
     Today(SummaryArgs),
     /// Show yesterday's summary.
     Yesterday(SummaryArgs),
-    /// Show this week's summary.
+    /// Show summary for the last 7 days.
     Week(SummaryArgs),
-    /// Show this month's summary.
+    /// Show summary for the last 30 days.
     Month(SummaryArgs),
     /// Show a summary for a custom date range.
     Range(RangeArgs),
@@ -222,9 +223,9 @@ where
     }
 
     if only_option_args {
-        return Ok(ParsedCli {
+        return TodayCli::try_parse_from(args).map(|cli| ParsedCli {
             command: None,
-            summary: SummaryArgs::default(),
+            summary: cli.summary,
         });
     }
 
@@ -265,7 +266,10 @@ fn main() {
         });
 
     if is_bare_invocation && std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
-        let selected = match interactive::run() {
+        let resolved_paths = paths::AppPaths::new().ok();
+        let db_path = resolved_paths.as_ref().map(|p| p.db_path.clone());
+        let config_path = resolved_paths.as_ref().map(|p| p.config_path.clone());
+        let selected = match interactive::run(db_path.as_deref(), config_path.as_deref()) {
             Ok(Some(command)) => command,
             Ok(None) => return,
             Err(error) => {
@@ -324,8 +328,10 @@ fn run_cli(cli: ParsedCli) {
         std::process::exit(1);
     }
 
+    // The thread throttles itself via the cache file before fetching; killing
+    // it early is safe (but loses this round's answer).
     if let Some(rx) = update_handle
-        && let Ok(Some(latest)) = rx.recv_timeout(StdDuration::from_millis(50))
+        && let Ok(Some(latest)) = rx.recv_timeout(StdDuration::from_millis(1000))
     {
         eprintln!(
             "Update available: {} → {latest}, run `diddo update`",
@@ -391,8 +397,12 @@ fn run_metadata_command() -> Result<(), Box<dyn Error>> {
     let database = db::Database::open(&paths.db_path)?;
     let size_bytes = std::fs::metadata(&paths.db_path)?.len();
     let hooks_status = init::hooks_status(&paths)?;
+    let app_config = config::AppConfig::load(&paths.config_path)?;
 
-    println!("{}", format_metadata(&database, size_bytes, &hooks_status)?);
+    println!(
+        "{}",
+        format_metadata(&database, size_bytes, &hooks_status, &app_config)?
+    );
 
     Ok(())
 }
@@ -413,6 +423,7 @@ fn format_metadata(
     database: &db::Database,
     size_bytes: u64,
     hooks_status: &init::HooksStatus,
+    app_config: &config::AppConfig,
 ) -> Result<String, Box<dyn Error>> {
     let count = database.commit_count()?;
     let oldest = match database.oldest_commit_date()? {
@@ -428,6 +439,17 @@ fn format_metadata(
 
     let global_hooks = match &hooks_status.global {
         init::GlobalHookStatus::ManagedByDiddo(path) => format!("{path} (ok)"),
+        init::GlobalHookStatus::MissingDiddoHook(path) => {
+            format!("{path} (missing diddo post-commit hook — run 'diddo init')")
+        }
+        init::GlobalHookStatus::ReplacedDiddoHook(path) => {
+            format!(
+                "{path} (diddo post-commit hook was replaced — run 'diddo init' to preserve the replacement and restore tracking)"
+            )
+        }
+        init::GlobalHookStatus::UnreadableDiddoHook(path, error) => {
+            format!("{path} (cannot inspect diddo post-commit hook: {error})")
+        }
         init::GlobalHookStatus::Other(path) => format!("{path} (not managed by diddo)"),
         init::GlobalHookStatus::NotSet => "not set (run 'diddo init')".to_string(),
     };
@@ -441,10 +463,59 @@ fn format_metadata(
         init::LocalHookStatus::NotInRepo => "not in a git repository".to_string(),
     };
 
+    let dash = "-";
+    let provider = app_config
+        .ai
+        .resolved_provider()
+        .as_deref()
+        .unwrap_or(dash)
+        .to_string();
+    let model = app_config
+        .ai
+        .resolved_model()
+        .as_deref()
+        .unwrap_or(dash)
+        .to_string();
+    let api_key = match app_config.ai.resolved_api_key() {
+        Some(key) => mask_api_key(&key),
+        None => dash.to_string(),
+    };
+    let cli_prefer = app_config
+        .ai
+        .normalized_cli_preference()
+        .as_deref()
+        .unwrap_or(dash)
+        .to_string();
+    let (prompt_label, prompt_text) = match app_config.ai.resolved_prompt_instructions() {
+        Some(custom) => ("custom", custom.to_string()),
+        None => ("default", ai::DEFAULT_PROMPT_INSTRUCTIONS.to_string()),
+    };
+    let auto_update = app_config.update.auto_check;
+
     Ok(format!(
-        "Database size:   {}\nTotal commits:   {count}\nOldest commit:   {oldest}\n\nGlobal hooks:    {global_hooks}\nLocal hooks:     {local_hooks}",
+        "Database size:   {}\n\
+         Total commits:   {count}\n\
+         Oldest commit:   {oldest}\n\
+         \n\
+         Global hooks:    {global_hooks}\n\
+         Local hooks:     {local_hooks}\n\
+         \n\
+         AI provider:     {provider}\n\
+         AI model:        {model}\n\
+         AI API key:      {api_key}\n\
+         CLI preference:  {cli_prefer}\n\
+         Prompt ({prompt_label}):\n{prompt_text}\n\n\
+         Auto-update:     {auto_update}",
         format_file_size(size_bytes)
     ))
+}
+
+fn mask_api_key(key: &str) -> String {
+    if key.len() <= 8 {
+        "***".to_string()
+    } else {
+        format!("{}…{}", &key[..4], &key[key.len() - 4..])
+    }
 }
 
 fn run_summary_command(cli: ParsedCli) -> Result<(), Box<dyn Error>> {
@@ -454,13 +525,15 @@ fn run_summary_command(cli: ParsedCli) -> Result<(), Box<dyn Error>> {
     let database = db::Database::open(&paths.db_path)?;
     let today = Local::now().date_naive();
     let window = resolve_summary_window(selection, today)?;
-    let commits = load_commits_for_window(&database, &window)?;
+    let app_config = config::AppConfig::load(&paths.config_path)?;
+    let mut commits = load_commits_for_window(&database, &window)?;
+    commits.retain(|c| !app_config.filters.is_ignored(c.author_email.as_deref()));
     let rendered = render_summary_output(
         &database,
         summary_args,
         window,
         commits,
-        || Ok(config::AppConfig::load(&paths.config_path)?),
+        move || Ok(app_config),
         ai::create_provider,
     )?;
 
@@ -522,12 +595,12 @@ fn resolve_summary_window(
             }
         }
         SummarySelection::Week => {
-            let week_start = today - Duration::days(today.weekday().num_days_from_monday().into());
+            let week_start = today - Duration::days(6);
             SummaryWindow {
                 from: week_start,
                 to: today,
-                date_label: format!("{week_start} to {today} (week)"),
-                ai_period: "this week".to_string(),
+                date_label: format!("{week_start} to {today} (last 7 days)"),
+                ai_period: "the last 7 days".to_string(),
                 exact_bounds: None,
             }
         }
@@ -543,14 +616,12 @@ fn resolve_summary_window(
             }
         }
         SummarySelection::Month => {
-            let month_start = today.with_day(1).ok_or_else(|| {
-                std::io::Error::other("failed to resolve the start of the current month")
-            })?;
+            let month_start = today - Duration::days(29);
             SummaryWindow {
                 from: month_start,
                 to: today,
-                date_label: format!("{month_start} to {today} (month)"),
-                ai_period: "this month".to_string(),
+                date_label: format!("{month_start} to {today} (last 30 days)"),
+                ai_period: "the last 30 days".to_string(),
                 exact_bounds: None,
             }
         }
@@ -977,8 +1048,8 @@ mod tests {
     use super::{
         AiSummaryAttempt, Commands, HelpCli, OutputFormat, ParsedCli, SummaryArgs,
         SummarySelection, build_summary_data, compute_cache_key, format_commit_time,
-        format_config_paths, format_file_size, format_metadata, output_format, parse_cli,
-        parse_interactive_selection, parse_supported_date, range_date_format_error,
+        format_config_paths, format_file_size, format_metadata, mask_api_key, output_format,
+        parse_cli, parse_interactive_selection, parse_supported_date, range_date_format_error,
         render_empty_summary, render_summary_output, resolve_summary_window, should_try_ai_summary,
         summary_request_from_cli, try_ai_summary,
     };
@@ -1101,68 +1172,131 @@ mod tests {
     }
 
     #[test]
-    fn bare_top_level_table_flag_is_treated_as_interactive_invocation() {
+    fn bare_top_level_table_flag_is_honored_when_not_interactive() {
         let cli = parse_cli(["diddo", "--table"]).unwrap();
 
         assert_eq!(
             cli,
             ParsedCli {
                 command: None,
-                summary: SummaryArgs::default(),
+                summary: super::SummaryArgs {
+                    md: false,
+                    raw: false,
+                    json: false,
+                    table: true,
+                    no_cache: false,
+                },
             }
         );
     }
 
     #[test]
-    fn bare_top_level_json_flag_is_treated_as_interactive_invocation() {
+    fn bare_top_level_json_flag_is_honored_when_not_interactive() {
         let cli = parse_cli(["diddo", "--json"]).unwrap();
 
         assert_eq!(
             cli,
             ParsedCli {
                 command: None,
-                summary: SummaryArgs::default(),
+                summary: super::SummaryArgs {
+                    md: false,
+                    raw: false,
+                    json: true,
+                    table: false,
+                    no_cache: false,
+                },
             }
         );
     }
 
     #[test]
-    fn bare_top_level_md_flag_is_treated_as_interactive_invocation() {
+    fn bare_top_level_md_flag_is_honored_when_not_interactive() {
         let cli = parse_cli(["diddo", "--md"]).unwrap();
 
         assert_eq!(
             cli,
             ParsedCli {
                 command: None,
-                summary: SummaryArgs::default(),
+                summary: super::SummaryArgs {
+                    md: true,
+                    raw: false,
+                    json: false,
+                    table: false,
+                    no_cache: false,
+                },
             }
         );
     }
 
     #[test]
-    fn bare_top_level_raw_flag_is_treated_as_interactive_invocation() {
+    fn bare_top_level_raw_flag_is_honored_when_not_interactive() {
         let cli = parse_cli(["diddo", "--raw"]).unwrap();
 
         assert_eq!(
             cli,
             ParsedCli {
                 command: None,
-                summary: SummaryArgs::default(),
+                summary: super::SummaryArgs {
+                    md: false,
+                    raw: true,
+                    json: false,
+                    table: false,
+                    no_cache: false,
+                },
             }
         );
     }
 
     #[test]
-    fn bare_top_level_no_cache_flag_is_treated_as_interactive_invocation() {
+    fn bare_top_level_no_cache_flag_is_honored_when_not_interactive() {
         let cli = parse_cli(["diddo", "--no-cache"]).unwrap();
 
         assert_eq!(
             cli,
             ParsedCli {
                 command: None,
-                summary: SummaryArgs::default(),
+                summary: super::SummaryArgs {
+                    md: false,
+                    raw: false,
+                    json: false,
+                    table: false,
+                    no_cache: true,
+                },
             }
         );
+    }
+
+    #[test]
+    fn parse_cli_honors_output_flags_without_subcommand() {
+        let cli = parse_cli(["diddo", "--md", "--no-cache"]).unwrap();
+
+        assert_eq!(
+            cli,
+            ParsedCli {
+                command: None,
+                summary: super::SummaryArgs {
+                    md: true,
+                    raw: false,
+                    json: false,
+                    table: false,
+                    no_cache: true,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn parse_cli_rejects_unknown_flag_without_subcommand() {
+        let error = parse_cli(["diddo", "--tabel"]).unwrap_err();
+
+        assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
+    }
+
+    #[test]
+    fn parse_cli_rejects_conflicting_output_flags_without_subcommand() {
+        let error = parse_cli(["diddo", "--md", "--json"]).unwrap_err();
+
+        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
     }
 
     #[test]
@@ -1478,27 +1612,27 @@ mod tests {
     }
 
     #[test]
-    fn resolves_week_window_from_monday_through_today() {
+    fn resolves_week_window_as_last_7_days() {
         let today = NaiveDate::from_ymd_opt(2026, 3, 12).unwrap();
 
         let window = resolve_summary_window(SummarySelection::Week, today).unwrap();
 
-        assert_eq!(window.from, NaiveDate::from_ymd_opt(2026, 3, 9).unwrap());
+        assert_eq!(window.from, NaiveDate::from_ymd_opt(2026, 3, 6).unwrap());
         assert_eq!(window.to, today);
-        assert_eq!(window.date_label, "2026-03-09 to 2026-03-12 (week)");
-        assert_eq!(window.ai_period, "this week");
+        assert_eq!(window.date_label, "2026-03-06 to 2026-03-12 (last 7 days)");
+        assert_eq!(window.ai_period, "the last 7 days");
     }
 
     #[test]
-    fn resolves_month_window_from_first_day_through_today() {
+    fn resolves_month_window_as_last_30_days() {
         let today = NaiveDate::from_ymd_opt(2026, 3, 12).unwrap();
 
         let window = resolve_summary_window(SummarySelection::Month, today).unwrap();
 
-        assert_eq!(window.from, NaiveDate::from_ymd_opt(2026, 3, 1).unwrap());
+        assert_eq!(window.from, NaiveDate::from_ymd_opt(2026, 2, 11).unwrap());
         assert_eq!(window.to, today);
-        assert_eq!(window.date_label, "2026-03-01 to 2026-03-12 (month)");
-        assert_eq!(window.ai_period, "this month");
+        assert_eq!(window.date_label, "2026-02-11 to 2026-03-12 (last 30 days)");
+        assert_eq!(window.ai_period, "the last 30 days");
     }
 
     #[test]
@@ -1717,8 +1851,10 @@ mod tests {
     #[test]
     fn renders_useful_empty_period_messages_for_all_output_formats() {
         let terminal = render_empty_summary("2026-03-10 (today)", SummaryArgs::default());
-        let month_terminal =
-            render_empty_summary("2026-03-01 to 2026-03-12 (month)", SummaryArgs::default());
+        let month_terminal = render_empty_summary(
+            "2026-02-10 to 2026-03-12 (last 30 days)",
+            SummaryArgs::default(),
+        );
         let range_terminal =
             render_empty_summary("2026-03-01 to 2026-03-11", SummaryArgs::default());
         let markdown = render_empty_summary(
@@ -1751,7 +1887,7 @@ mod tests {
         assert_eq!(terminal, "No commits recorded for 2026-03-10 (today).");
         assert_eq!(
             month_terminal,
-            "No commits recorded for 2026-03-01 to 2026-03-12 (month)."
+            "No commits recorded for 2026-02-10 to 2026-03-12 (last 30 days)."
         );
         assert_eq!(
             range_terminal,
@@ -2029,7 +2165,7 @@ mod tests {
         let database = crate::db::Database::open_in_memory().unwrap();
         let status = test_hooks_status();
 
-        let output = format_metadata(&database, 0, &status).unwrap();
+        let output = format_metadata(&database, 0, &status, &AppConfig::default()).unwrap();
 
         assert!(output.contains("Database size:   0 bytes"));
         assert!(output.contains("Total commits:   0"));
@@ -2056,7 +2192,8 @@ mod tests {
             .insert_commit(&sample_commit_at("bbb2222", "repo-b", "/tmp/repo-b", later))
             .unwrap();
 
-        let output = format_metadata(&database, 50 * 1024 * 1024, &status).unwrap();
+        let output =
+            format_metadata(&database, 50 * 1024 * 1024, &status, &AppConfig::default()).unwrap();
 
         assert!(output.contains("Database size:   50.00 MB"));
         assert!(output.contains("Total commits:   2"));
@@ -2075,7 +2212,7 @@ mod tests {
             local: crate::init::LocalHookStatus::NotSet,
         };
 
-        let output = format_metadata(&database, 0, &status).unwrap();
+        let output = format_metadata(&database, 0, &status, &AppConfig::default()).unwrap();
 
         assert!(output.contains("Global hooks:    ~/.config/diddo/hooks (ok)"));
         assert!(output.contains("Local hooks:     not set"));
@@ -2089,10 +2226,64 @@ mod tests {
             local: crate::init::LocalHookStatus::NoDiddoHook(".husky".to_string()),
         };
 
-        let output = format_metadata(&database, 0, &status).unwrap();
+        let output = format_metadata(&database, 0, &status, &AppConfig::default()).unwrap();
 
         assert!(output.contains("Global hooks:    not set (run 'diddo init')"));
         assert!(output.contains("Local hooks:     .husky (missing diddo hook"));
+    }
+
+    #[test]
+    fn metadata_shows_config_settings() {
+        let database = crate::db::Database::open_in_memory().unwrap();
+        let status = test_hooks_status();
+        let config = AppConfig {
+            ai: AiConfig {
+                provider: Some("anthropic".to_string()),
+                api_key: Some("sk-ant-1234567890abcdef".to_string()),
+                model: Some("claude-sonnet-4-6".to_string()),
+                prompt_instructions: Some("Summarize in German.".to_string()),
+                cli: AiCliConfig {
+                    prefer: Some("api".to_string()),
+                },
+            },
+            update: crate::config::UpdateConfig { auto_check: false },
+            filters: crate::config::FiltersConfig::default(),
+            ..AppConfig::default()
+        };
+
+        let output = format_metadata(&database, 0, &status, &config).unwrap();
+
+        assert!(output.contains("AI provider:     anthropic"));
+        assert!(output.contains("AI model:        claude-sonnet-4-6"));
+        assert!(output.contains("AI API key:      sk-a…cdef"));
+        assert!(output.contains("CLI preference:  api"));
+        assert!(output.contains("Prompt (custom):"));
+        assert!(output.contains("Summarize in German."));
+        assert!(output.contains("Auto-update:     false"));
+    }
+
+    #[test]
+    fn metadata_shows_defaults_when_config_is_empty() {
+        let database = crate::db::Database::open_in_memory().unwrap();
+        let status = test_hooks_status();
+
+        let output = format_metadata(&database, 0, &status, &AppConfig::default()).unwrap();
+
+        assert!(output.contains("AI provider:     -"));
+        assert!(output.contains("AI model:        -"));
+        assert!(output.contains("AI API key:      -"));
+        assert!(output.contains("CLI preference:  -"));
+        assert!(output.contains("Prompt (default):"));
+        assert!(output.contains("Using only the commit data provided"));
+        assert!(output.contains("Auto-update:     true"));
+    }
+
+    #[test]
+    fn mask_api_key_hides_middle_of_long_keys() {
+        assert_eq!(mask_api_key("sk-ant-1234567890abcdef"), "sk-a…cdef");
+        assert_eq!(mask_api_key("short"), "***");
+        assert_eq!(mask_api_key("12345678"), "***");
+        assert_eq!(mask_api_key("123456789"), "1234…6789");
     }
 
     #[test]

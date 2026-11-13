@@ -58,8 +58,15 @@ impl Database {
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
         {
-            fs::create_dir_all(parent)
-                .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
+            fs::create_dir_all(parent).map_err(|error| {
+                rusqlite::Error::SqliteFailure(
+                    rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CANTOPEN),
+                    Some(format!(
+                        "could not create data directory {}: {error}",
+                        parent.display()
+                    )),
+                )
+            })?;
         }
 
         let connection = Connection::open(path)?;
@@ -71,10 +78,50 @@ impl Database {
         Self::initialize(connection)
     }
 
-    fn initialize(connection: Connection) -> Result<Self> {
-        connection.execute_batch(SCHEMA)?;
-        run_author_email_migration(&connection)?;
-        run_commit_hash_migration(&connection)?;
+    fn initialize(mut connection: Connection) -> Result<Self> {
+        connection.busy_timeout(std::time::Duration::from_secs(5))?;
+
+        // WAL lets a reader coexist with the hook's writer and removes the
+        // rollback-journal create/delete churn on every commit. It can legitimately
+        // fail on filesystems without shared memory (NFS/SMB home directories), and
+        // on in-memory databases it simply reports "memory" — diddo must keep working
+        // in both cases, so a non-WAL outcome is tolerated rather than fatal.
+        let journal_mode = connection
+            .pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get::<_, String>(0))
+            .unwrap_or_default();
+
+        // synchronous=NORMAL is corruption-safe ONLY in WAL mode. SQLite documents a
+        // small but non-zero chance of corruption on power loss when NORMAL is combined
+        // with a rollback journal, so if WAL did not take effect leave synchronous at
+        // its default (FULL) and accept the slower writes.
+        if journal_mode.eq_ignore_ascii_case("wal") {
+            connection.pragma_update(None, "synchronous", "NORMAL")?;
+        }
+
+        const SCHEMA_VERSION: i64 = 2;
+        let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        if version > SCHEMA_VERSION {
+            return Err(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_MISMATCH),
+                Some(format!(
+                    "database schema version {version} is newer than this diddo build supports ({SCHEMA_VERSION}); upgrade diddo (run `diddo update`)"
+                )),
+            ));
+        }
+        if version < SCHEMA_VERSION {
+            let tx =
+                connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            let version: i64 = tx.pragma_query_value(None, "user_version", |row| row.get(0))?;
+            if version == 0 {
+                tx.execute_batch(SCHEMA)?;
+                run_author_email_migration(&tx)?;
+            }
+            if version < SCHEMA_VERSION {
+                run_commit_hash_migration(&tx)?;
+                tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+            }
+            tx.commit()?;
+        }
 
         Ok(Self { connection })
     }
@@ -258,8 +305,8 @@ fn git_rev_parse_oid(repo_path: &Path, oid: &str) -> Option<String> {
     let output = Command::new("git")
         .arg("-C")
         .arg(repo_path)
-        .arg("rev-parse")
-        .arg(oid)
+        .args(["rev-parse", "--verify", "--end-of-options"])
+        .arg(format!("{oid}^{{commit}}"))
         .output()
         .ok()?;
     if !output.status.success() {
@@ -267,15 +314,16 @@ fn git_rev_parse_oid(repo_path: &Path, oid: &str) -> Option<String> {
     }
     let text = String::from_utf8_lossy(&output.stdout);
     let trimmed = text.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
+    if hash_looks_like_full_oid(trimmed) && trimmed.starts_with(oid) {
         Some(trimmed.to_string())
+    } else {
+        None
     }
 }
 
 fn run_commit_hash_migration(conn: &Connection) -> Result<()> {
-    let mut stmt = conn.prepare("SELECT DISTINCT repo_path, hash FROM commits")?;
+    let mut stmt =
+        conn.prepare("SELECT repo_path, hash FROM commits WHERE length(hash) NOT IN (40, 64)")?;
     let pairs: Vec<(String, String)> = stmt
         .query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
@@ -283,7 +331,7 @@ fn run_commit_hash_migration(conn: &Connection) -> Result<()> {
         .collect::<Result<Vec<_>>>()?;
 
     for (repo_path, hash) in pairs {
-        if !hash_is_all_hex(&hash) || hash_looks_like_full_oid(&hash) {
+        if !hash_is_all_hex(&hash) {
             continue;
         }
 
@@ -345,13 +393,44 @@ fn local_day_start_in_utc<Tz: TimeZone>(date: NaiveDate, timezone: &Tz) -> Resul
         .and_hms_opt(0, 0, 0)
         .ok_or(rusqlite::Error::InvalidQuery)?;
 
-    let datetime = match timezone.from_local_datetime(&local_midnight) {
-        LocalResult::Single(value) => value,
-        LocalResult::Ambiguous(first, _) => first,
-        LocalResult::None => return Err(rusqlite::Error::InvalidQuery),
-    };
+    match timezone.from_local_datetime(&local_midnight) {
+        LocalResult::Single(value) => Ok(value.with_timezone(&Utc)),
+        LocalResult::Ambiguous(first, _) => Ok(first.with_timezone(&Utc)),
+        // A nonexistent local midnight (DST spring-forward at 00:00, real in e.g.
+        // America/Santiago, America/Havana, Asia/Beirut) is walked forward one hour
+        // at a time until a wall-clock instant actually exists. A spring-forward gap
+        // is at most two hours anywhere on Earth, so trying up to 03:00 is sufficient.
+        LocalResult::None => first_resolvable_local_hour(1..=3, |hour| {
+            date.and_hms_opt(hour, 0, 0)
+                .map(|naive| {
+                    timezone
+                        .from_local_datetime(&naive)
+                        .map(|v| v.with_timezone(&Utc))
+                })
+                .unwrap_or(LocalResult::None)
+        })
+        .ok_or(rusqlite::Error::InvalidQuery),
+    }
+}
 
-    Ok(datetime.with_timezone(&Utc))
+/// Tries each hour in `hours` via `resolve`, returning the first wall-clock instant
+/// that actually exists (preferring the earlier instant when a resolved hour is
+/// itself ambiguous, e.g. a fall-back DST transition). Extracted from
+/// `local_day_start_in_utc` so the "walk forward, take the first that resolves"
+/// behavior can be unit-tested with constructed `LocalResult` values instead of a
+/// hand-rolled `chrono::TimeZone` implementation.
+fn first_resolvable_local_hour<F>(
+    hours: std::ops::RangeInclusive<u32>,
+    mut resolve: F,
+) -> Option<DateTime<Utc>>
+where
+    F: FnMut(u32) -> LocalResult<DateTime<Utc>>,
+{
+    hours.into_iter().find_map(|hour| match resolve(hour) {
+        LocalResult::Single(value) => Some(value),
+        LocalResult::Ambiguous(value, _) => Some(value),
+        LocalResult::None => None,
+    })
 }
 
 fn commit_from_row(row: &Row<'_>) -> Result<Commit> {
@@ -645,7 +724,7 @@ mod tests {
 
         let db_path = root.join("d.sqlite");
         let committed_at = Utc::now();
-        let today = committed_at.date_naive();
+        let today = committed_at.with_timezone(&Local).date_naive();
         {
             let database = Database::open(&db_path).unwrap();
             let commit = Commit {
@@ -663,6 +742,10 @@ mod tests {
             };
             database.insert_commit(&commit).unwrap();
             assert_eq!(database.commit_count().unwrap(), 1);
+            database
+                .connection
+                .pragma_update(None, "user_version", 1)
+                .unwrap();
             drop(database);
         }
 
@@ -672,6 +755,13 @@ mod tests {
             let commits = database.query_date(today).unwrap();
             assert_eq!(commits.len(), 1);
             assert_eq!(commits[0].hash, full);
+            let imported = Commit {
+                files_changed: 0,
+                insertions: 0,
+                ..commits[0].clone()
+            };
+            assert!(!database.insert_commit_if_new(&imported).unwrap());
+            assert_eq!(database.query_date(today).unwrap()[0].insertions, 1);
         }
 
         fs::remove_dir_all(&root).ok();
@@ -699,7 +789,7 @@ mod tests {
         assert_ne!(short, full);
 
         let committed_at = Utc::now();
-        let today = committed_at.date_naive();
+        let today = committed_at.with_timezone(&Local).date_naive();
         let db_path = root.join("d.sqlite");
         {
             let database = Database::open(&db_path).unwrap();
@@ -734,6 +824,10 @@ mod tests {
                 })
                 .unwrap();
             assert_eq!(database.commit_count().unwrap(), 2);
+            database
+                .connection
+                .pragma_update(None, "user_version", 1)
+                .unwrap();
             drop(database);
         }
 
@@ -964,6 +1058,112 @@ mod tests {
 
         assert_eq!(start, "2026-03-09T22:00:00+00:00");
         assert_eq!(end, "2026-03-10T22:00:00+00:00");
+    }
+
+    #[test]
+    fn schema_version_is_stamped_after_open() {
+        let database = Database::open_in_memory().unwrap();
+
+        let version: i64 = database
+            .connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+
+        assert_eq!(version, 2);
+    }
+
+    #[test]
+    fn open_upgrades_version_zero_database() {
+        let connection = rusqlite::Connection::open_in_memory().unwrap();
+        connection.execute_batch(super::SCHEMA).unwrap();
+        let pre_version: i64 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(pre_version, 0);
+
+        let database = Database::initialize(connection).unwrap();
+
+        let version: i64 = database
+            .connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 2);
+    }
+
+    #[test]
+    fn open_refuses_newer_schema_version() {
+        let connection = rusqlite::Connection::open_in_memory().unwrap();
+        connection.pragma_update(None, "user_version", 99).unwrap();
+
+        let error = match Database::initialize(connection) {
+            Err(error) => error,
+            Ok(_) => panic!("expected initialize to reject a newer schema version"),
+        };
+
+        assert!(
+            error.to_string().contains("newer than this diddo build"),
+            "unexpected error message: {error}"
+        );
+    }
+
+    #[test]
+    fn nonexistent_local_midnight_falls_forward_to_first_resolvable_hour() {
+        use chrono::LocalResult;
+
+        let resolved = Utc.with_ymd_and_hms(2026, 3, 8, 2, 0, 0).unwrap();
+
+        let result = super::first_resolvable_local_hour(1..=3, |hour| {
+            if hour == 2 {
+                LocalResult::Single(resolved)
+            } else {
+                LocalResult::None
+            }
+        });
+
+        assert_eq!(result, Some(resolved));
+    }
+
+    #[test]
+    fn first_resolvable_local_hour_returns_none_when_no_hour_resolves() {
+        let result = super::first_resolvable_local_hour(1..=3, |_| chrono::LocalResult::None);
+
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn busy_timeout_is_set() {
+        let database = Database::open_in_memory().unwrap();
+
+        let timeout_ms: i64 = database
+            .connection
+            .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
+            .unwrap();
+
+        assert_eq!(timeout_ms, 5000);
+    }
+
+    #[test]
+    fn wal_mode_enabled_for_file_database() {
+        let dir = unique_temp_path("diddo-db-wal");
+        let path = dir.join("diddo.sqlite3");
+
+        let database = Database::open(&path).unwrap();
+
+        let journal_mode: String = database
+            .connection
+            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+            .unwrap();
+        let synchronous: i64 = database
+            .connection
+            .query_row("PRAGMA synchronous", [], |row| row.get(0))
+            .unwrap();
+
+        assert_eq!(journal_mode.to_lowercase(), "wal");
+        assert_eq!(synchronous, 1);
+
+        drop(database);
+        // Removing the containing temp dir also removes the -wal/-shm sidecars.
+        fs::remove_dir_all(&dir).ok();
     }
 
     fn schema_object_name(database: &Database, object_type: &str, object_name: &str) -> String {

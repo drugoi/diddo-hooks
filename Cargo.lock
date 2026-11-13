@@ -357,7 +357,7 @@ dependencies = [
 
 [[package]]
 name = "diddo"
-version = "0.6.3"
+version = "0.6.8"
 dependencies = [
  "chrono",
  "clap",
@@ -371,6 +371,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "tempfile",
  "toml",
 ]
 

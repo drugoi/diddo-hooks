@@ -47,10 +47,13 @@ To pin a version:
 $env:DIDDO_VERSION = "0.1.0"; irm https://raw.githubusercontent.com/drugoi/diddo-hooks/main/install.ps1 | iex
 ```
 
+Both installers verify the downloaded archive's integrity against the release's `SHA256SUMS` asset before installing. Pinning a version older than the first release that published `SHA256SUMS` requires `DIDDO_SKIP_CHECKSUM=1` to install anyway.
+
 Install options (environment variables):
 
 - **DIDDO_VERSION** — Pin the install to a specific release (e.g. `0.1.0`).
 - **DIDDO_INSTALL_DIR** — Directory where the binary is installed. Defaults: `$HOME/.local/bin` (macOS/Linux), `%LOCALAPPDATA%\diddo` (Windows).
+- **DIDDO_SKIP_CHECKSUM** — Set to `1` to skip checksum verification when installing a release that predates `SHA256SUMS` publication.
 
 Alternatively, download the `diddo-<version>-x86_64-pc-windows-msvc.zip` (or ARM64) from [Releases](https://github.com/drugoi/diddo-hooks/releases), extract `diddo.exe`, and add the folder to your PATH.
 
@@ -78,9 +81,13 @@ What `diddo init` does:
 
 - Creates a managed hooks directory for `diddo`
 - Sets global git `core.hooksPath` to that directory
-- Preserves and forwards any previously configured global hooks so existing hooks keep running
+- Keeps your existing hooks running: forwards to your previously configured global hooks if you had any, otherwise to each repository's own `.git/hooks` (so repo-local hooks like git-lfs keep working) — matching what git itself would have run
 
 On **Windows**, global hooks run only if you use **Git for Windows** (or another Git that runs hook scripts with a Unix-like shell). The generated hooks are `#!/bin/sh` scripts; Git for Windows runs them with its bundled sh.
+
+### Recovering a replaced global hook
+
+`git lfs install --force` can replace diddo's global `post-commit` hook and stop commit tracking. Run `diddo metadata` to check the hook, then run `diddo init` to restore tracking. It preserves the replacement as `post-commit.diddo-prev` and runs it alongside diddo. It also saves stock Git LFS `post-checkout`, `post-merge`, and `pre-push` hooks in the managed directory as `*.diddo-prev` and calls them from wrappers. When `git-lfs` is missing from the caller's `PATH`, diddo's wrappers check the standard Homebrew locations `/opt/homebrew/bin` and `/usr/local/bin`. If a different backup already exists, move it to a safe location before retrying.
 
 ### Repositories with local hooks (Husky, etc.)
 
@@ -153,7 +160,7 @@ Hooks dir: C:\Users\you\AppData\Roaming\diddo\hooks
 
 ## Usage
 
-Run `diddo` in a terminal to launch **interactive mode** — an arrow-key menu of all available commands. Any `--` flags without a subcommand (e.g. `diddo --table`, `diddo --md`) also launch interactive mode; the flags are ignored.
+Run `diddo` in a terminal to launch **interactive mode** — an arrow-key menu of all available commands. Any `--` flags without a subcommand (e.g. `diddo --table`, `diddo --md`) also launch interactive mode; the flags are ignored. When output is piped or redirected (not a terminal), flags without a subcommand are honored instead: `diddo --json > out.json` emits JSON.
 Interactive mode includes direct shortcuts for `month` and a `range` form that collects `from` and optional `to` dates in either `YYYY-MM-DD` or `DD.MM.YYYY` before launching the command.
 
 Show summaries:
@@ -186,7 +193,7 @@ diddo week --raw
 diddo week --table
 ```
 
-Output flags must be used with a subcommand (`today`, `yesterday`, `week`, `standup`):
+Output flags must be used with a subcommand (`today`, `yesterday`, `week`, `month`, `range`, `standup`) to take effect in interactive (terminal) mode; when piped, flags without a subcommand are honored directly:
 
 - **`--md`** — Output summary as markdown. Includes the repository activity table.
 - **`--json`** — Output summary as JSON.
@@ -214,7 +221,7 @@ diddo week --table
 
 Current CLI behavior:
 
-- `diddo` without a subcommand launches interactive mode in a terminal; any `--` flags are ignored
+- `diddo` without a subcommand launches interactive mode in a terminal; any `--` flags are ignored in a terminal; when piped they are honored
 - `diddo today`, `diddo yesterday`, `diddo week`, `diddo standup` run the corresponding summary directly
 - `diddo standup` shows commits from the last 24 hours (`[now - 24h, now]`), useful when your daily meeting is in the afternoon
 - `diddo` and `diddo today` are equivalent
@@ -222,7 +229,7 @@ Current CLI behavior:
 - `diddo range --from YYYY-MM-DD|DD.MM.YYYY [--to YYYY-MM-DD|DD.MM.YYYY]` shows an inclusive custom date range
 - `diddo range --from ...` defaults `--to` to today's local date
 - `range` accepts both `YYYY-MM-DD` and `DD.MM.YYYY` on input, and normalizes output labels back to `YYYY-MM-DD`
-- Output flags (`--md`, `--json`, `--raw`, `--table`, `--no-cache`) only take effect with a subcommand
+- Output flags (`--md`, `--json`, `--raw`, `--table`, `--no-cache`) only take effect with a subcommand in interactive (terminal) mode; when piped they are honored without a subcommand
 - `--table` is mutually exclusive with `--md`, `--json`, and `--raw`
 - `--raw` skips AI and shows grouped commit data without the activity table
 - `--table` skips AI and shows only the repository activity table
@@ -256,7 +263,7 @@ Without extra configuration, it tries installed AI CLIs in this order:
 1. `claude`
 2. `codex`
 3. `opencode`
-4. `cursor`
+4. `cursor-agent`
 
 If no supported CLI is available, `diddo` falls back to a direct API provider when configuration and credentials are available.
 
@@ -345,6 +352,7 @@ Options:
 | `ai.model` | Model for direct API; defaults: `gpt-4o-mini` (OpenAI), `claude-sonnet-4-6` (Anthropic) |
 | `ai.prompt_instructions` | Custom AI instructions (tone, language, length); period and commit list are always appended |
 | `ai.cli.prefer` | CLI/API preference: `api`, `cli`, `claude`, `codex`, `opencode`, or `cursor-agent` |
+| `filters.ignored_profiles` | List of author emails to exclude from reports. Defaults to `["test@test.com"]`. Set to `[]` to disable filtering. |
 
 Example:
 
@@ -385,6 +393,14 @@ Notes:
 - `ai.api_key` in the config file overrides environment variables
 - `ai.prompt_instructions` (optional): when set, replaces the default AI instructions (tone, language, length); period, commit count, and commit list are always appended. Use for a different language or more concise output. Empty or missing = default instructions.
 - If `ai.provider` is omitted and exactly one of `DIDDO_OPENAI_KEY` or `DIDDO_ANTHROPIC_KEY` is set, `diddo` infers the provider from that environment variable
+- `filters.ignored_profiles` excludes commits whose author email matches any entry (trimmed, case-insensitive) from summary and activity reports. `test@test.com` is ignored by default; override with a custom list or `[]` to keep everything
+
+Example:
+
+```toml
+[filters]
+ignored_profiles = ["test@test.com", "ci-bot@example.com"]
+```
 
 ## Uninstall
 

@@ -3,7 +3,7 @@
 # Usage: curl -sSL https://raw.githubusercontent.com/drugoi/diddo-hooks/main/install.sh | sh
 # Pin version: DIDDO_VERSION=0.1.0 curl -sSL ... | sh
 
-set -e
+set -eu
 
 REPO="drugoi/diddo-hooks"
 BASE_URL="https://github.com/${REPO}"
@@ -33,9 +33,24 @@ detect_target() {
   esac
 }
 
+# Validate that a version string is a strict semver-like value with no
+# embedded newlines (grep matches line-by-line, so a multi-line value could
+# otherwise slip a match past the pattern below).
+validate_version() {
+  if [ "$(printf '%s' "$1" | wc -l)" -ne 0 ]; then
+    echo "Invalid version '$1' (contains embedded newline)" >&2
+    return 1
+  fi
+  echo "$1" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$' || {
+    echo "Invalid version '$1' (expected e.g. 0.6.7)" >&2
+    return 1
+  }
+}
+
 # Resolve version: DIDDO_VERSION env, or latest from GitHub API.
 get_version() {
-  if [ -n "$DIDDO_VERSION" ]; then
+  if [ -n "${DIDDO_VERSION:-}" ]; then
+    validate_version "$DIDDO_VERSION" || return 1
     echo "$DIDDO_VERSION"
     return
   fi
@@ -45,6 +60,7 @@ get_version() {
     echo "Could not determine latest release. Set DIDDO_VERSION=0.1.0 or create a release on GitHub." >&2
     return 1
   fi
+  validate_version "${tag#v}" || return 1
   echo "${tag#v}"
 }
 
@@ -58,10 +74,39 @@ VERSION=$(get_version) || exit 1
 TARBALL="diddo-${VERSION}-${TARGET}.tar.gz"
 URL="${BASE_URL}/releases/download/v${VERSION}/${TARBALL}"
 
+sha256_tool() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | awk '{print $1}'
+  else shasum -a 256 "$1" | awk '{print $1}'; fi
+}
+
 mkdir -p "$INSTALL_DIR"
 tmpdir=$(mktemp -d)
 trap 'rm -rf "$tmpdir"' EXIT
-curl -sSL -o "${tmpdir}/${TARBALL}" "$URL"
+curl -fsSL -o "${tmpdir}/${TARBALL}" "$URL"
+
+SUMS_URL="${BASE_URL}/releases/download/v${VERSION}/SHA256SUMS"
+if curl -fsSL -o "${tmpdir}/SHA256SUMS" "$SUMS_URL"; then
+  expected=$(awk -v f="$TARBALL" '$2 == f {print $1}' "${tmpdir}/SHA256SUMS")
+  if [ -z "$expected" ]; then
+    echo "Release v${VERSION} has no checksum entry for ${TARBALL}; aborting." >&2
+    exit 1
+  fi
+  actual=$(sha256_tool "${tmpdir}/${TARBALL}")
+  if [ "$actual" != "$expected" ]; then
+    echo "Checksum mismatch for ${TARBALL}: expected ${expected}, got ${actual}. Aborting." >&2
+    exit 1
+  fi
+  echo "Checksum verified."
+else
+  if [ "${DIDDO_SKIP_CHECKSUM:-}" = "1" ]; then
+    echo "WARNING: no SHA256SUMS published for v${VERSION}; skipping verification (DIDDO_SKIP_CHECKSUM=1)." >&2
+  else
+    echo "Release v${VERSION} does not publish SHA256SUMS (older release?)." >&2
+    echo "Set DIDDO_SKIP_CHECKSUM=1 to install anyway, or pin a newer version." >&2
+    exit 1
+  fi
+fi
+
 tar -xzf "${tmpdir}/${TARBALL}" -C "$tmpdir"
 mv "$tmpdir/diddo" "${INSTALL_DIR}/diddo"
 chmod +x "${INSTALL_DIR}/diddo"
