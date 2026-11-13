@@ -9,6 +9,21 @@ pub struct AppConfig {
     pub update: UpdateConfig,
     pub onboarding: OnboardingConfig,
     pub filters: FiltersConfig,
+    pub retention: RetentionConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct RetentionConfig {
+    pub days: std::num::NonZeroU32,
+}
+
+impl Default for RetentionConfig {
+    fn default() -> Self {
+        Self {
+            days: std::num::NonZeroU32::new(365).unwrap(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]

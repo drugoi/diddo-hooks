@@ -7,6 +7,7 @@ mod init;
 mod interactive;
 mod onboarding;
 mod paths;
+mod prune;
 mod render;
 mod summary_group;
 mod update;
@@ -102,6 +103,21 @@ struct UpdateArgs {
     yes: bool,
 }
 
+#[derive(Args, Debug, Clone, Copy, PartialEq, Eq)]
+struct PruneArgs {
+    /// Override the configured retention period (default: 365 days).
+    #[arg(long)]
+    days: Option<std::num::NonZeroU32>,
+
+    /// Show how many commits would be removed.
+    #[arg(long, conflicts_with = "yes")]
+    dry_run: bool,
+
+    /// Delete without prompting.
+    #[arg(long)]
+    yes: bool,
+}
+
 #[derive(Subcommand, Debug, Clone, Copy, PartialEq, Eq)]
 enum Commands {
     /// Show today's summary.
@@ -128,6 +144,8 @@ enum Commands {
     Metadata,
     /// Import existing commit history for the current repository.
     Onboard,
+    /// Remove commit records older than the retention period.
+    Prune(PruneArgs),
     /// Update diddo to the latest release.
     Update(UpdateArgs),
 }
@@ -319,6 +337,7 @@ fn run_cli(cli: ParsedCli) {
         Some(Commands::Config) => run_config_command(),
         Some(Commands::Metadata) => run_metadata_command(),
         Some(Commands::Onboard) => run_onboard_command(),
+        Some(Commands::Prune(args)) => prune::run(args),
         Some(Commands::Update(args)) => run_update_command(args),
         _ => run_summary_command(cli),
     };
@@ -567,6 +586,7 @@ fn summary_request_from_cli(cli: ParsedCli) -> Option<(SummarySelection, Summary
             | Commands::Config
             | Commands::Metadata
             | Commands::Onboard
+            | Commands::Prune(_)
             | Commands::Update(_),
         ) => None,
     }
