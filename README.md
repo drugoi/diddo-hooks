@@ -1,27 +1,21 @@
 # diddo
 
-`diddo` tracks your git commits and turns them into daily summaries.
+`diddo` records Git commits locally and generates daily summaries.
 
-It installs a global `post-commit` hook, stores commit metadata in a local SQLite database, and can summarize that history with an AI CLI tool or a direct API provider.
-
-## Demo
-
-![Terminal demo of diddo today --table and diddo standup --raw using example commits](assets/diddo-demo.gif)
-
-The demo shows real output from diddo 0.7.0 using commits from two sample repositories. Both commands run without AI.
+![Example output from diddo today --table and diddo standup --raw](assets/diddo-demo.gif)
 
 ## Quick start
 
-After [installing diddo](#install), run these commands from a Git repository:
+After [installing diddo](#install), run:
 
 ```bash
-diddo init             # Start recording new commits
-diddo onboard          # Optionally import existing commits from this repo
-diddo today --table    # See today's commit counts by repository
-diddo standup --raw    # See commit messages from the last 24 hours
-diddo week --md        # Get a weekly summary in Markdown
-diddo                  # Open the menu and select Activity Report for a heatmap
+diddo init
+diddo today --table
+diddo standup --raw
+diddo week --md
 ```
+
+Run `diddo onboard` inside a repository to import its history. For the activity heatmap, run `diddo` and select **Activity Report**.
 
 ## Install
 
