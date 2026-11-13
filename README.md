@@ -85,6 +85,10 @@ What `diddo init` does:
 
 On **Windows**, global hooks run only if you use **Git for Windows** (or another Git that runs hook scripts with a Unix-like shell). The generated hooks are `#!/bin/sh` scripts; Git for Windows runs them with its bundled sh.
 
+### Recovering a replaced global hook
+
+`git lfs install --force` can replace diddo's global `post-commit` hook and stop commit tracking. Run `diddo metadata` to check the hook, then run `diddo init` to restore tracking. It preserves the replacement as `post-commit.diddo-prev` and runs it alongside diddo. It also saves stock Git LFS `post-checkout`, `post-merge`, and `pre-push` hooks in the managed directory as `*.diddo-prev` and calls them from wrappers. When `git-lfs` is missing from the caller's `PATH`, diddo's wrappers check the standard Homebrew locations `/opt/homebrew/bin` and `/usr/local/bin`. If a different backup already exists, move it to a safe location before retrying.
+
 ### Repositories with local hooks (Husky, etc.)
 
 Repositories that set a local `core.hooksPath` (e.g. Husky’s `.husky`) override the global path. Git only runs hooks from the local directory, so the global hooks are never invoked.

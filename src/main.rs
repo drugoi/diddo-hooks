@@ -427,6 +427,17 @@ fn format_metadata(
 
     let global_hooks = match &hooks_status.global {
         init::GlobalHookStatus::ManagedByDiddo(path) => format!("{path} (ok)"),
+        init::GlobalHookStatus::MissingDiddoHook(path) => {
+            format!("{path} (missing diddo post-commit hook — run 'diddo init')")
+        }
+        init::GlobalHookStatus::ReplacedDiddoHook(path) => {
+            format!(
+                "{path} (diddo post-commit hook was replaced — run 'diddo init' to preserve the replacement and restore tracking)"
+            )
+        }
+        init::GlobalHookStatus::UnreadableDiddoHook(path, error) => {
+            format!("{path} (cannot inspect diddo post-commit hook: {error})")
+        }
         init::GlobalHookStatus::Other(path) => format!("{path} (not managed by diddo)"),
         init::GlobalHookStatus::NotSet => "not set (run 'diddo init')".to_string(),
     };
