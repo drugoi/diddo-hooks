@@ -281,6 +281,12 @@ fn is_forwarding_hook(contents: &[u8], previous_hooks_path: Option<&str>, name: 
 
 fn build_lfs_forwarding_hook() -> String {
     format!(
+        "#!/bin/sh\nset -eu\n{DIDDO_MANAGED_MARKER}\nif [ -x \"$0.diddo-prev\" ]; then\n{GIT_LFS_PATH_FALLBACK}exec \"$0.diddo-prev\" \"$@\"\nfi\n"
+    )
+}
+
+fn legacy_lfs_forwarding_hook() -> String {
+    format!(
         "#!/bin/sh\nset -eu\n{DIDDO_MANAGED_MARKER}\n{GIT_LFS_PATH_FALLBACK}exec \"$0.diddo-prev\" \"$@\"\n"
     )
 }
@@ -292,8 +298,11 @@ fn is_stock_lfs_hook(contents: &[u8], name: &str) -> bool {
     let mut lines = script.lines();
     lines.next() == Some("#!/bin/sh")
         && lines.next().is_some_and(|line| {
-            line.starts_with("command -v git-lfs >/dev/null 2>&1 || { printf >&2 ")
-                && line.ends_with("; exit 2; }")
+            line.strip_prefix("command -v git-lfs >/dev/null 2>&1 || { ")
+                .is_some_and(|handler| {
+                    (handler.starts_with("printf >&2 ") || handler.starts_with("echo >&2 "))
+                        && handler.ends_with("; exit 2; }")
+                })
         })
         && lines.next() == Some(format!("git lfs {name} \"$@\"").as_str())
         && lines.all(str::is_empty)
@@ -500,7 +509,8 @@ fn remove_managed_hooks(hooks_dir: &Path, previous_hooks_path: Option<&str>) -> 
             continue;
         };
         if GIT_LFS_FORWARDING_HOOKS.contains(&name)
-            && contents == build_lfs_forwarding_hook().as_bytes()
+            && (contents == build_lfs_forwarding_hook().as_bytes()
+                || contents == legacy_lfs_forwarding_hook().as_bytes())
         {
             fs::rename(path.with_extension("diddo-prev"), &path)?;
         } else if is_forwarding_hook(&contents, previous_hooks_path, name) {
@@ -568,6 +578,12 @@ fn create_forwarding_hooks(
         let script = build_forwarding_hook_script(previous_hooks_path, hook_name);
         let backup = target_hook.with_extension("diddo-prev");
         match read_hook(&target_hook) {
+            Ok(Some(contents))
+                if GIT_LFS_FORWARDING_HOOKS.contains(&hook_name)
+                    && contents == legacy_lfs_forwarding_hook().as_bytes() =>
+            {
+                write_file_atomically(&target_hook, build_lfs_forwarding_hook().as_bytes(), true)?;
+            }
             Ok(None) => {
                 let script = if GIT_LFS_FORWARDING_HOOKS.contains(&hook_name)
                     && read_hook(&backup)?
@@ -1200,6 +1216,27 @@ mod tests {
             assert!(!hook.with_extension("diddo-prev").exists());
             assert_eq!(fs::read_to_string(hook).unwrap(), stock(name));
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reinstall_wraps_legacy_lfs_hook_and_skips_disabled_backup() {
+        let hooks_dir = temp_dir("legacy-lfs-hook");
+        let paths = test_paths(hooks_dir.clone());
+        let hook = hooks_dir.join("post-checkout");
+        let legacy = "#!/bin/sh\ncommand -v git-lfs >/dev/null 2>&1 || { echo >&2 \"missing git-lfs\"; exit 2; }\ngit lfs post-checkout \"$@\"\n";
+        fs::write(&hook, legacy).unwrap();
+
+        install_with(&paths, || Ok(None), |_| Ok(())).unwrap();
+        let backup = hook.with_extension("diddo-prev");
+        assert_eq!(fs::read_to_string(&backup).unwrap(), legacy);
+        assert!(
+            Command::new("/bin/sh")
+                .arg(hook)
+                .status()
+                .unwrap()
+                .success()
+        );
     }
 
     #[test]
