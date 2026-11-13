@@ -4,7 +4,24 @@
 
 It installs a global `post-commit` hook, stores commit metadata in a local SQLite database, and can summarize that history with an AI CLI tool or a direct API provider.
 
-![diddo today output](assets/diddo.png)
+## Demo
+
+![Terminal demo of diddo today --table and diddo standup --raw using example commits](assets/diddo-demo.gif)
+
+The demo shows real output from diddo 0.7.0 using commits from two sample repositories. Both commands run without AI.
+
+## Quick start
+
+After [installing diddo](#install), run these commands from a Git repository:
+
+```bash
+diddo init             # Start recording new commits
+diddo onboard          # Optionally import existing commits from this repo
+diddo today --table    # See today's commit counts by repository
+diddo standup --raw    # See commit messages from the last 24 hours
+diddo week --md        # Get a weekly summary in Markdown
+diddo                  # Open the menu and select Activity Report for a heatmap
+```
 
 ## Install
 
@@ -187,10 +204,6 @@ diddo month --md
 diddo range --from 2026-03-01 --json
 diddo range --from 2026-03-01 --to 2026-03-11 --raw
 diddo today --no-cache
-diddo yesterday --json
-diddo yesterday --table
-diddo week --raw
-diddo week --table
 ```
 
 Output flags must be used with a subcommand (`today`, `yesterday`, `week`, `month`, `range`, `standup`) to take effect in interactive (terminal) mode; when piped, flags without a subcommand are honored directly:
@@ -224,8 +237,7 @@ Current CLI behavior:
 - `diddo` without a subcommand launches interactive mode in a terminal; any `--` flags are ignored in a terminal; when piped they are honored
 - `diddo today`, `diddo yesterday`, `diddo week`, `diddo standup` run the corresponding summary directly
 - `diddo standup` shows commits from the last 24 hours (`[now - 24h, now]`), useful when your daily meeting is in the afternoon
-- `diddo` and `diddo today` are equivalent
-- `diddo month` shows the current calendar month from day 1 through today
+- `diddo month` shows a rolling 30-day window ending today
 - `diddo range --from YYYY-MM-DD|DD.MM.YYYY [--to YYYY-MM-DD|DD.MM.YYYY]` shows an inclusive custom date range
 - `diddo range --from ...` defaults `--to` to today's local date
 - `range` accepts both `YYYY-MM-DD` and `DD.MM.YYYY` on input, and normalizes output labels back to `YYYY-MM-DD`
