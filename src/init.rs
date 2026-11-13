@@ -15,6 +15,9 @@ pub struct HooksStatus {
 #[derive(Debug)]
 pub enum GlobalHookStatus {
     ManagedByDiddo(String),
+    MissingDiddoHook(String),
+    ReplacedDiddoHook(String),
+    UnreadableDiddoHook(String, io::Error),
     Other(String),
     NotSet,
 }
@@ -29,6 +32,8 @@ pub enum LocalHookStatus {
 
 const POST_COMMIT_FILE: &str = "post-commit";
 const POST_COMMIT_DIDDO_PREV: &str = "post-commit.diddo-prev";
+const GIT_LFS_FORWARDING_HOOKS: &[&str] = &["post-checkout", "post-merge", "pre-push"];
+const GIT_LFS_PATH_FALLBACK: &str = "if ! command -v git-lfs >/dev/null 2>&1; then\n  for lfs_bin in /opt/homebrew/bin /usr/local/bin; do\n    if [ -x \"$lfs_bin/git-lfs\" ]; then\n      PATH=\"$lfs_bin${PATH:+:$PATH}\"\n      export PATH\n      break\n    fi\n  done\nfi\n";
 const DIDDO_MANAGED_MARKER: &str = "# diddo-managed";
 const STATE_FILE: &str = "diddo-managed-state";
 const HOOK_NAMES: &[&str] = &[
@@ -121,16 +126,7 @@ pub fn uninstall() -> io::Result<()> {
 }
 
 pub fn hooks_status(paths: &AppPaths) -> io::Result<HooksStatus> {
-    let global = match get_global_hooks_dir()? {
-        Some(state) => {
-            if same_path(&state.resolved, &paths.hooks_dir) {
-                GlobalHookStatus::ManagedByDiddo(state.raw)
-            } else {
-                GlobalHookStatus::Other(state.raw)
-            }
-        }
-        None => GlobalHookStatus::NotSet,
-    };
+    let global = global_hooks_status(paths, get_global_hooks_dir()?);
 
     let local = match get_local_hooks_dir() {
         Ok(Some((raw, resolved))) => {
@@ -156,13 +152,57 @@ pub fn hooks_status(paths: &AppPaths) -> io::Result<HooksStatus> {
     Ok(HooksStatus { global, local })
 }
 
+fn global_hooks_status(paths: &AppPaths, state: Option<HookPathState>) -> GlobalHookStatus {
+    let Some(state) = state else {
+        return GlobalHookStatus::NotSet;
+    };
+    if !same_path(&state.resolved, &paths.hooks_dir) {
+        return GlobalHookStatus::Other(state.raw);
+    }
+    match read_hook(&paths.hooks_dir.join(POST_COMMIT_FILE)) {
+        Ok(Some(contents)) if is_diddo_hook(&contents) => {
+            GlobalHookStatus::ManagedByDiddo(state.raw)
+        }
+        Ok(Some(_)) => GlobalHookStatus::ReplacedDiddoHook(state.raw),
+        Ok(None) => GlobalHookStatus::MissingDiddoHook(state.raw),
+        Err(error) => GlobalHookStatus::UnreadableDiddoHook(state.raw, error),
+    }
+}
+
+fn read_hook(path: &Path) -> io::Result<Option<Vec<u8>>> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_file() => fs::read(path).map(Some),
+        Ok(_) => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{} is not a regular hook file", path.display()),
+        )),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+fn is_diddo_hook(contents: &[u8]) -> bool {
+    contents
+        .split(|&byte| byte == b'\n')
+        .any(|line| line.strip_suffix(b"\r").unwrap_or(line) == DIDDO_MANAGED_MARKER.as_bytes())
+}
+
 fn build_post_commit_script(
     previous_hooks_path: Option<&str>,
     include_local_fallback: bool,
 ) -> String {
+    build_chained_post_commit_script(previous_hooks_path, include_local_fallback, None)
+}
+
+fn build_chained_post_commit_script(
+    previous_hooks_path: Option<&str>,
+    include_local_fallback: bool,
+    preserved_hook_dir: Option<&Path>,
+) -> String {
     let mut script = String::from("#!/bin/sh\nset -u\n");
     script.push_str(DIDDO_MANAGED_MARKER);
     script.push_str("\n\ndiddo_status=0\n");
+    script.push_str(GIT_LFS_PATH_FALLBACK);
 
     match resolve_diddo_executable() {
         Ok(Some(diddo_path)) => {
@@ -172,6 +212,15 @@ fn build_post_commit_script(
             ));
         }
         _ => script.push_str("diddo hook || diddo_status=$?\n"),
+    }
+
+    if let Some(dir) = preserved_hook_dir {
+        script.push_str("\npreserved_status=0\n");
+        script.push_str(&build_previous_hook_invocation(
+            &path_for_script(dir),
+            POST_COMMIT_DIDDO_PREV,
+            "preserved_status",
+        ));
     }
 
     if let Some(previous_hooks_path) = previous_hooks_path {
@@ -193,21 +242,70 @@ fn build_post_commit_script(
         ));
     }
 
+    if preserved_hook_dir.is_some() {
+        script.push_str(
+            "\nif [ \"$preserved_status\" -ne 0 ]; then\n  exit \"$preserved_status\"\nfi\n",
+        );
+    }
     script.push_str("\nif [ \"$diddo_status\" -ne 0 ]; then\n  exit \"$diddo_status\"\nfi\n");
 
     script
 }
 
 fn build_forwarding_hook_script(previous_hooks_path: Option<&str>, hook_name: &str) -> String {
-    let body = match previous_hooks_path {
+    format!(
+        "#!/bin/sh\nset -eu\n\n{GIT_LFS_PATH_FALLBACK}{}",
+        forwarding_hook_body(previous_hooks_path, hook_name)
+    )
+}
+
+fn forwarding_hook_body(previous_hooks_path: Option<&str>, hook_name: &str) -> String {
+    match previous_hooks_path {
         Some(previous_hooks_path) => format!(
             "{}if [ -x \"$previous_hook_path\" ]; then\n  \"$previous_hook_path\" \"$@\"\nfi\n",
             build_previous_hook_path_resolution(previous_hooks_path, hook_name)
         ),
         None => build_local_hook_invocation(hook_name, None),
-    };
+    }
+}
 
-    format!("#!/bin/sh\nset -eu\n\n{body}")
+fn is_forwarding_hook(contents: &[u8], previous_hooks_path: Option<&str>, name: &str) -> bool {
+    contents == build_forwarding_hook_script(previous_hooks_path, name).as_bytes()
+        || contents
+            == format!(
+                "#!/bin/sh\nset -eu\n\n{}",
+                forwarding_hook_body(previous_hooks_path, name)
+            )
+            .as_bytes()
+}
+
+fn build_lfs_forwarding_hook() -> String {
+    format!(
+        "#!/bin/sh\nset -eu\n{DIDDO_MANAGED_MARKER}\nif [ -x \"$0.diddo-prev\" ]; then\n{GIT_LFS_PATH_FALLBACK}exec \"$0.diddo-prev\" \"$@\"\nfi\n"
+    )
+}
+
+fn legacy_lfs_forwarding_hook() -> String {
+    format!(
+        "#!/bin/sh\nset -eu\n{DIDDO_MANAGED_MARKER}\n{GIT_LFS_PATH_FALLBACK}exec \"$0.diddo-prev\" \"$@\"\n"
+    )
+}
+
+fn is_stock_lfs_hook(contents: &[u8], name: &str) -> bool {
+    let Ok(script) = std::str::from_utf8(contents) else {
+        return false;
+    };
+    let mut lines = script.lines();
+    lines.next() == Some("#!/bin/sh")
+        && lines.next().is_some_and(|line| {
+            line.strip_prefix("command -v git-lfs >/dev/null 2>&1 || { ")
+                .is_some_and(|handler| {
+                    (handler.starts_with("printf >&2 ") || handler.starts_with("echo >&2 "))
+                        && handler.ends_with("; exit 2; }")
+                })
+        })
+        && lines.next() == Some(format!("git lfs {name} \"$@\"").as_str())
+        && lines.all(str::is_empty)
 }
 
 /// Emits the shell fragment that forwards to the repo-local `$GIT_DIR/hooks/<hook_name>`
@@ -284,30 +382,80 @@ where
     fs::create_dir_all(&paths.hooks_dir)?;
 
     let current_hooks_dir = get_existing_hooks_dir()?;
-    let previous_hooks_dir = resolve_previous_hooks_dir_for_install(paths, current_hooks_dir)?;
-
-    clear_managed_hooks_dir(&paths.hooks_dir)?;
-    write_previous_hooks_state(
-        &paths.hooks_dir,
-        previous_hooks_dir.as_ref().map(|state| state.raw.as_str()),
-    )?;
-
-    create_forwarding_hooks(
-        previous_hooks_dir.as_ref().map(|state| state.raw.as_str()),
-        &paths.hooks_dir,
-    )?;
+    let installed_previous = read_previous_hooks_state(&paths.hooks_dir)?;
+    let previous = match current_hooks_dir.as_ref() {
+        Some(current) if same_path(&current.resolved, &paths.hooks_dir) => {
+            installed_previous.as_deref()
+        }
+        other => other.map(|state| state.raw.as_str()),
+    };
 
     let generated_post_commit = paths.hooks_dir.join(POST_COMMIT_FILE);
-    fs::write(
-        &generated_post_commit,
-        build_post_commit_script(
-            previous_hooks_dir.as_ref().map(|state| state.raw.as_str()),
-            true,
-        ),
-    )?;
-    set_executable_if_unix(&generated_post_commit)?;
+    let preserved = preserve_post_commit(&paths.hooks_dir)?;
+
+    create_forwarding_hooks(previous, installed_previous.as_deref(), &paths.hooks_dir)?;
+    write_previous_hooks_state(&paths.hooks_dir, previous)?;
+    let script = build_chained_post_commit_script(
+        previous,
+        true,
+        preserved.then_some(paths.hooks_dir.as_path()),
+    );
+    write_file_atomically(&generated_post_commit, script.as_bytes(), true)?;
 
     set_managed_hooks_dir(&paths.hooks_dir)
+}
+
+fn preserve_post_commit(hooks_dir: &Path) -> io::Result<bool> {
+    let hook = hooks_dir.join(POST_COMMIT_FILE);
+    let backup = hooks_dir.join(POST_COMMIT_DIDDO_PREV);
+    let existing_backup = read_hook(&backup)?;
+    let Some(contents) = read_hook(&hook)?.filter(|contents| !is_diddo_hook(contents)) else {
+        return Ok(existing_backup.is_some());
+    };
+    preserve_hook(&hook, &backup, &contents, existing_backup)?;
+    Ok(true)
+}
+
+fn preserve_hook(
+    hook: &Path,
+    backup: &Path,
+    contents: &[u8],
+    existing_backup: Option<Vec<u8>>,
+) -> io::Result<()> {
+    use std::io::Write;
+
+    let permissions = fs::metadata(hook)?.permissions();
+    if let Some(existing) = existing_backup {
+        if existing == contents && fs::metadata(backup)?.permissions() == permissions {
+            return Ok(());
+        }
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!(
+                "Cannot preserve {} because {} already contains a different hook. Save the existing backup elsewhere, then run 'diddo init' again.",
+                hook.display(),
+                backup.display()
+            ),
+        ));
+    }
+
+    let mut staged = tempfile::NamedTempFile::new_in(hook.parent().unwrap())?;
+    staged.write_all(contents)?;
+    staged.as_file().set_permissions(permissions)?;
+    staged.persist_noclobber(backup)?;
+    Ok(())
+}
+
+fn write_file_atomically(path: &Path, contents: &[u8], executable: bool) -> io::Result<()> {
+    use std::io::Write;
+
+    let mut staged = tempfile::NamedTempFile::new_in(path.parent().unwrap())?;
+    staged.write_all(contents)?;
+    if executable {
+        set_executable_if_unix(staged.path())?;
+    }
+    staged.persist(path)?;
+    Ok(())
 }
 
 fn uninstall_with<FGet, FRestore, FUnset>(
@@ -339,46 +487,53 @@ where
         UninstallOutcome::LeftCurrentUntouched(current_hooks_dir.map(|state| state.raw))
     };
 
-    if paths.hooks_dir.exists() {
-        fs::remove_dir_all(&paths.hooks_dir)?;
-    }
+    remove_managed_hooks(&paths.hooks_dir, previous_hooks_path.as_deref())?;
 
     Ok(outcome)
 }
 
-fn resolve_previous_hooks_dir_for_install(
-    paths: &AppPaths,
-    current_hooks_dir: Option<HookPathState>,
-) -> io::Result<Option<HookPathState>> {
-    match current_hooks_dir {
-        Some(current) if same_path(&current.resolved, &paths.hooks_dir) => {
-            let previous_raw = read_previous_hooks_state(&paths.hooks_dir)?;
-            Ok(previous_raw.map(|raw| HookPathState {
-                resolved: PathBuf::from(&raw),
-                raw,
-            }))
-        }
-        other => Ok(other),
-    }
-}
-
-fn clear_managed_hooks_dir(managed_hooks_dir: &Path) -> io::Result<()> {
-    if !managed_hooks_dir.exists() {
-        return Ok(());
-    }
-
-    for entry in fs::read_dir(managed_hooks_dir)? {
-        let entry = entry?;
-        let path = entry.path();
-
-        if entry.file_type()?.is_dir() {
-            fs::remove_dir_all(path)?;
+fn remove_managed_hooks(hooks_dir: &Path, previous_hooks_path: Option<&str>) -> io::Result<()> {
+    let post_commit = hooks_dir.join(POST_COMMIT_FILE);
+    let backup = hooks_dir.join(POST_COMMIT_DIDDO_PREV);
+    if read_hook(&post_commit).is_ok_and(|hook| hook.is_some_and(|bytes| is_diddo_hook(&bytes))) {
+        if read_hook(&backup)?.is_some() {
+            fs::rename(&backup, &post_commit)?;
         } else {
+            fs::remove_file(&post_commit)?;
+        }
+    }
+
+    for &name in HOOK_NAMES.iter().filter(|&&name| name != POST_COMMIT_FILE) {
+        let path = hooks_dir.join(name);
+        let Ok(Some(contents)) = read_hook(&path) else {
+            continue;
+        };
+        if GIT_LFS_FORWARDING_HOOKS.contains(&name)
+            && (contents == build_lfs_forwarding_hook().as_bytes()
+                || contents == legacy_lfs_forwarding_hook().as_bytes())
+        {
+            fs::rename(path.with_extension("diddo-prev"), &path)?;
+        } else if is_forwarding_hook(&contents, previous_hooks_path, name) {
             fs::remove_file(path)?;
         }
     }
-
-    Ok(())
+    match fs::remove_file(hooks_dir.join(STATE_FILE)) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    match fs::remove_dir(hooks_dir) {
+        Ok(()) => Ok(()),
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::DirectoryNotEmpty | io::ErrorKind::NotFound
+            ) =>
+        {
+            Ok(())
+        }
+        Err(error) => Err(error),
+    }
 }
 
 fn write_previous_hooks_state(
@@ -389,7 +544,7 @@ fn write_previous_hooks_state(
     let contents = previous_hooks_path
         .map(|path| format!("{path}\n"))
         .unwrap_or_default();
-    fs::write(state_path, contents)
+    write_file_atomically(&state_path, contents.as_bytes(), false)
 }
 
 fn read_previous_hooks_state(managed_hooks_dir: &Path) -> io::Result<Option<String>> {
@@ -411,19 +566,50 @@ fn read_previous_hooks_state(managed_hooks_dir: &Path) -> io::Result<Option<Stri
 
 fn create_forwarding_hooks(
     previous_hooks_path: Option<&str>,
+    installed_previous: Option<&str>,
     managed_hooks_dir: &Path,
 ) -> io::Result<()> {
-    for hook_name in HOOK_NAMES {
-        if *hook_name == POST_COMMIT_FILE {
+    for &hook_name in HOOK_NAMES {
+        if hook_name == POST_COMMIT_FILE {
             continue;
         }
 
         let target_hook = managed_hooks_dir.join(hook_name);
-        fs::write(
-            &target_hook,
-            build_forwarding_hook_script(previous_hooks_path, hook_name),
-        )?;
-        set_executable_if_unix(&target_hook)?;
+        let script = build_forwarding_hook_script(previous_hooks_path, hook_name);
+        let backup = target_hook.with_extension("diddo-prev");
+        match read_hook(&target_hook) {
+            Ok(Some(contents))
+                if GIT_LFS_FORWARDING_HOOKS.contains(&hook_name)
+                    && contents == legacy_lfs_forwarding_hook().as_bytes() =>
+            {
+                write_file_atomically(&target_hook, build_lfs_forwarding_hook().as_bytes(), true)?;
+            }
+            Ok(None) => {
+                let script = if GIT_LFS_FORWARDING_HOOKS.contains(&hook_name)
+                    && read_hook(&backup)?
+                        .is_some_and(|contents| is_stock_lfs_hook(&contents, hook_name))
+                {
+                    build_lfs_forwarding_hook()
+                } else {
+                    script
+                };
+                write_file_atomically(&target_hook, script.as_bytes(), true)?;
+            }
+            Ok(Some(contents))
+                if GIT_LFS_FORWARDING_HOOKS.contains(&hook_name)
+                    && is_stock_lfs_hook(&contents, hook_name) =>
+            {
+                preserve_hook(&target_hook, &backup, &contents, read_hook(&backup)?)?;
+                write_file_atomically(&target_hook, build_lfs_forwarding_hook().as_bytes(), true)?;
+            }
+            Ok(Some(contents))
+                if contents != script.as_bytes()
+                    && is_forwarding_hook(&contents, installed_previous, hook_name) =>
+            {
+                write_file_atomically(&target_hook, script.as_bytes(), true)?;
+            }
+            _ => {}
+        }
     }
 
     Ok(())
@@ -570,6 +756,7 @@ fn build_post_commit_script_with_previous(path: &str, hook_name: &str) -> String
     let mut script = String::from("#!/bin/sh\nset -u\n");
     script.push_str(DIDDO_MANAGED_MARKER);
     script.push_str("\n\ndiddo_status=0\n");
+    script.push_str(GIT_LFS_PATH_FALLBACK);
 
     match resolve_diddo_executable() {
         Ok(Some(diddo_path)) => {
@@ -901,6 +1088,158 @@ mod tests {
     }
 
     #[test]
+    fn global_status_detects_missing_and_replaced_post_commit() {
+        use super::{GlobalHookStatus, global_hooks_status};
+
+        let temp = temp_dir("global-hook-status");
+        let paths = test_paths(temp);
+        let status = || {
+            global_hooks_status(
+                &paths,
+                Some(HookPathState {
+                    raw: paths.hooks_dir.display().to_string(),
+                    resolved: paths.hooks_dir.clone(),
+                }),
+            )
+        };
+
+        assert!(matches!(status(), GlobalHookStatus::MissingDiddoHook(_)));
+        let post_commit = paths.hooks_dir.join("post-commit");
+        fs::write(&post_commit, "#!/bin/sh\ngit lfs post-commit \"$@\"\n").unwrap();
+        assert!(matches!(status(), GlobalHookStatus::ReplacedDiddoHook(_)));
+        fs::write(post_commit, "#!/bin/sh\r\n# diddo-managed\r\n").unwrap();
+        assert!(matches!(status(), GlobalHookStatus::ManagedByDiddo(_)));
+    }
+
+    #[test]
+    fn reinstall_keeps_both_hooks_when_the_backup_conflicts() {
+        let hooks_dir = temp_dir("global-hook-backup-conflict");
+        let paths = test_paths(hooks_dir.clone());
+        let hook = hooks_dir.join("post-commit");
+        let backup = hooks_dir.join(POST_COMMIT_DIDDO_PREV);
+        fs::write(&hook, b"new replacement").unwrap();
+        fs::write(&backup, b"previous replacement").unwrap();
+        let result = install_with(
+            &paths,
+            || Ok(None),
+            |_| panic!("Git config must not change if the backup conflicts"),
+        );
+        assert_eq!(
+            result.unwrap_err().kind(),
+            std::io::ErrorKind::AlreadyExists
+        );
+        assert_eq!(fs::read(hook).unwrap(), b"new replacement");
+        assert_eq!(fs::read(backup).unwrap(), b"previous replacement");
+    }
+
+    #[test]
+    fn reinstall_preserves_overwritten_post_commit_and_other_lfs_hooks() {
+        let temp = temp_dir("install-overwritten-hook");
+        let hooks_dir = temp.join("managed-hooks");
+        let paths = test_paths(hooks_dir.clone());
+        let current = || {
+            Ok(Some(HookPathState {
+                raw: hooks_dir.display().to_string(),
+                resolved: hooks_dir.clone(),
+            }))
+        };
+        install_with(&paths, || Ok(None), |_| Ok(())).unwrap();
+
+        let post_commit = hooks_dir.join("post-commit");
+        let lfs_post_commit = "#!/bin/sh\ngit lfs post-commit \"$@\"\n";
+        fs::write(&post_commit, lfs_post_commit).unwrap();
+        for name in ["post-checkout", "post-merge", "pre-push"] {
+            fs::write(hooks_dir.join(name), format!("#!/bin/sh\ngit lfs {name}\n")).unwrap();
+        }
+
+        for _ in 0..2 {
+            install_with(&paths, current, |_| Ok(())).unwrap();
+            let script = fs::read_to_string(&post_commit).unwrap();
+            assert!(script.contains("# diddo-managed"));
+            assert!(script.contains("previous_hook_name='post-commit.diddo-prev'"));
+            assert_eq!(
+                fs::read_to_string(hooks_dir.join(POST_COMMIT_DIDDO_PREV)).unwrap(),
+                lfs_post_commit
+            );
+            for name in ["post-checkout", "post-merge", "pre-push"] {
+                assert_eq!(
+                    fs::read_to_string(hooks_dir.join(name)).unwrap(),
+                    format!("#!/bin/sh\ngit lfs {name}\n")
+                );
+            }
+        }
+
+        uninstall_with(&paths, current, |_| Ok(()), || Ok(())).unwrap();
+        assert_eq!(fs::read_to_string(&post_commit).unwrap(), lfs_post_commit);
+        assert!(hooks_dir.join("post-checkout").is_file());
+        assert!(!hooks_dir.join("pre-commit").exists());
+    }
+
+    #[test]
+    fn reinstall_wraps_stock_lfs_hooks_and_restores_them_on_uninstall() {
+        let hooks_dir = temp_dir("stock-lfs-hooks");
+        let paths = test_paths(hooks_dir.clone());
+        let current = || {
+            Ok(Some(HookPathState {
+                raw: hooks_dir.display().to_string(),
+                resolved: hooks_dir.clone(),
+            }))
+        };
+        let stock = |name: &str| {
+            format!(
+                "#!/bin/sh\ncommand -v git-lfs >/dev/null 2>&1 || {{ printf >&2 \"missing git-lfs\"; exit 2; }}\ngit lfs {name} \"$@\"\n\n"
+            )
+        };
+        for name in ["post-checkout", "post-merge", "pre-push"] {
+            fs::write(hooks_dir.join(name), stock(name)).unwrap();
+        }
+
+        for _ in 0..2 {
+            install_with(&paths, current, |_| Ok(())).unwrap();
+            for name in ["post-checkout", "post-merge", "pre-push"] {
+                let hook = hooks_dir.join(name);
+                assert_eq!(
+                    fs::read_to_string(hook.with_extension("diddo-prev")).unwrap(),
+                    stock(name)
+                );
+                assert!(
+                    fs::read_to_string(hook)
+                        .unwrap()
+                        .contains("/opt/homebrew/bin")
+                );
+            }
+        }
+
+        uninstall_with(&paths, current, |_| Ok(()), || Ok(())).unwrap();
+        for name in ["post-checkout", "post-merge", "pre-push"] {
+            let hook = hooks_dir.join(name);
+            assert!(!hook.with_extension("diddo-prev").exists());
+            assert_eq!(fs::read_to_string(hook).unwrap(), stock(name));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reinstall_wraps_legacy_lfs_hook_and_skips_disabled_backup() {
+        let hooks_dir = temp_dir("legacy-lfs-hook");
+        let paths = test_paths(hooks_dir.clone());
+        let hook = hooks_dir.join("post-checkout");
+        let legacy = "#!/bin/sh\ncommand -v git-lfs >/dev/null 2>&1 || { echo >&2 \"missing git-lfs\"; exit 2; }\ngit lfs post-checkout \"$@\"\n";
+        fs::write(&hook, legacy).unwrap();
+
+        install_with(&paths, || Ok(None), |_| Ok(())).unwrap();
+        let backup = hook.with_extension("diddo-prev");
+        assert_eq!(fs::read_to_string(&backup).unwrap(), legacy);
+        assert!(
+            Command::new("/bin/sh")
+                .arg(hook)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+
+    #[test]
     fn fresh_install_creates_all_hook_wrappers() {
         let temp = temp_dir("install-all-wrappers");
         let hooks_dir = temp.join("managed-hooks");
@@ -1079,7 +1418,11 @@ mod tests {
         let current_hooks_dir = hooks_dir.clone();
 
         fs::create_dir_all(&hooks_dir).unwrap();
-        fs::write(hooks_dir.join("post-commit"), "#!/bin/sh\ndiddo hook\n").unwrap();
+        fs::write(
+            hooks_dir.join("post-commit"),
+            build_post_commit_script(None, true),
+        )
+        .unwrap();
         fs::write(hooks_dir.join(STATE_FILE), "/tmp/previous-hooks\n").unwrap();
 
         uninstall_with(
@@ -1120,7 +1463,11 @@ mod tests {
         let unset_called_for_assert = Arc::clone(&unset_called);
 
         fs::create_dir_all(&hooks_dir).unwrap();
-        fs::write(hooks_dir.join("post-commit"), "#!/bin/sh\ndiddo hook\n").unwrap();
+        fs::write(
+            hooks_dir.join("post-commit"),
+            build_post_commit_script(None, true),
+        )
+        .unwrap();
         fs::write(hooks_dir.join(STATE_FILE), "/tmp/previous-hooks\n").unwrap();
 
         uninstall_with(

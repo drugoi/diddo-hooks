@@ -24,3 +24,4 @@ indicatif = "0.17"
 crossterm = "0.28"
 self_update = { version = "0.36", default-features = false, features = ["rustls", "archive-tar", "compression-flate2"] }
 semver = "1.0"
+tempfile = "3"
